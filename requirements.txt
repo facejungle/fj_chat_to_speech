@@ -1,0 +1,15 @@
+# Google Auth
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+google-auth
+# Speech deps
+sounddevice==0.5.5
+num2words==0.5.14
+numpy==2.4.2
+scipy==1.17.0
+# GUI
+# tk==0.1.0
+customtkinter==5.2.2
+Pillow
+silero @ https://github.com/snakers4/silero-models/archive/refs/heads/master.zip#sha256=64dbc0dab75af504efa489d6ef5dd1de4257ffec34246774d75b1fef447623be

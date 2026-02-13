@@ -76,7 +76,12 @@ def create_virtual_env():
     if not os.path.exists(venv_path):
         print(f"📦 Creating virtual environment at {venv_path}...")
         try:
-            subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
+            if platform.system() == "Windows":
+                subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
+            else:
+                import tkinter
+
+                subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", venv_path], check=True)
             print("✓ Virtual environment created")
         except subprocess.CalledProcessError as e:
             print(f"❌ Failed to create virtual environment: {e}")
@@ -116,12 +121,6 @@ def create_spec_file():
 
     # Check if model cache exists and add to datas
     datas = [("settings.json", ".")]
-
-    # Add model cache if exists
-    model_cache = TORCH_CACHE_DIR
-    if model_cache.exists():
-        datas.append((str(model_cache), "torch_cache/hub"))
-
     datas_str = str(datas).replace("'", '"')
 
     spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
@@ -190,25 +189,6 @@ def install_dependencies():
     return venv_path, pip_path, python_path
 
 
-def copy_model_cache_to_build():
-    """Copy downloaded model to build directory"""
-    print("📦 Copying model cache to build...")
-
-    # Source cache directories
-    torch_cache = TORCH_CACHE_DIR
-
-    # Target directory in build
-    build_model_dir = Path("dist") / "models"
-    build_model_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy torch hub cache
-    if torch_cache.exists():
-        print(f"  Copying torch hub cache from {torch_cache}")
-        shutil.copytree(torch_cache, build_model_dir / "torch_hub", dirs_exist_ok=True)
-
-    print("✓ Model cache copied")
-
-
 def build_with_upx():
     """Build with UPX compression"""
     print("\n" + "=" * 50)
@@ -231,9 +211,6 @@ def build_with_upx():
     print("📦 Installing PyInstaller...")
     subprocess.run([pip_path, "install", "pyinstaller"], check=True)
 
-    # Copy model cache to build
-    copy_model_cache_to_build()
-
     # Create spec file
     spec_file = create_spec_file()
 
@@ -241,6 +218,7 @@ def build_with_upx():
     if platform.system() == "Windows":
         pyinstaller_path = os.path.join(venv_path, "Scripts", "pyinstaller")
     else:
+
         pyinstaller_path = os.path.join(venv_path, "bin", "pyinstaller")
 
     # Clean previous dist
@@ -264,10 +242,6 @@ def build_with_upx():
 
         # Add datas
         cmd.extend(["--add-data", "settings.json:."])
-
-        # Add model cache if exists
-        if os.path.exists(str(TORCH_CACHE_DIR)):
-            cmd.extend(["--add-data", f"{Path.home() / '.cache' / 'torch' / 'hub'}:torch_cache/hub"])
 
     try:
         # Add more time for large builds
@@ -312,10 +286,6 @@ def create_launcher_script():
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Setup torch cache
-export TORCH_HOME="$SCRIPT_DIR/torch_cache"
-mkdir -p "$TORCH_HOME"
-
 # Run application
 "./{FILE_NAME}"
 """
@@ -339,11 +309,6 @@ def main():
     if not os.path.exists(MAIN_SCRIPT):
         print(f"❌ {MAIN_SCRIPT} not found in current directory")
         return
-
-    if not os.path.exists("settings.json"):
-        print("⚠️ settings.json not found, creating empty file...")
-        with open("settings.json", "w") as f:
-            f.write("{}")
 
     # Clean directories
     clean_build_dirs()

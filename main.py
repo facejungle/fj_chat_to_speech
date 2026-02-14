@@ -27,7 +27,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 default_locale = locale.getlocale()
-print(f"Detected system locale: {default_locale}")
 
 BUFFER_SIZE = 15
 PAD = 10
@@ -1298,7 +1297,6 @@ class FJChatVoice:
         settings = {
             "gui_language": self.gui_language,
             "api_key_yt": self.api_key_yt,
-            # "video_id": self.video_id_yt,
             "chat_language": self.chat_language,
             "silero_speaker": self.speaker,
             "speech_rate": self.speech_rate,
@@ -1346,7 +1344,6 @@ class FJChatVoice:
                 settings = json.load(f)
                 self.gui_language = settings.get("gui_language", DEFAULT_LANGUAGE)
                 self.api_key_yt = settings.get("api_key_yt", "")
-                # self.video_id_yt = settings.get("video_id", "")
                 self.chat_language = settings.get("chat_language", DEFAULT_LANGUAGE)
                 self.speaker = settings.get("silero_speaker", VOICES[self.chat_language][0])
                 self.speech_rate = settings.get("speech_rate", 1.0)

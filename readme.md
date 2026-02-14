@@ -22,6 +22,26 @@ Google Console > APIs & Services > Credentials > Create credentials > API key
 ![alt text](./docs/console_api_key_1.png)
 ![alt text](./docs/console_api_key_2.png)
 
+# Launch from code
+
+```
+git clone https://github.com/facejungle/fj_chat_voice.git
+cd fj_chat_voice
+python -m venv .venv
+pip install -r requirements.txt
+pip install -r torch.requirements.txt
+
+# Linux
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\Activate.ps1
+# or
+.venv\Scripts\Activate
+
+python main.py
+```
+
 # Build
 
 ## Linux

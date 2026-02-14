@@ -42,6 +42,7 @@ DEFAULT_LANGUAGE = (
     else "English"
 )
 GUI_LANGUAGES = ("English", "Russian")
+LANG_CODES = {"English": "en", "Russian": "ru"}
 VOICES = {
     "Russian": ("xenia", "aidar", "baya", "kseniya", "eugene"),
     "English": (
@@ -708,11 +709,11 @@ class FJChatVoice:
             try:
                 if "." in num:
                     parts = num.split(".")
-                    integer_part = num2words(int(parts[0]), lang="en")
-                    fractional_part = num2words(int(parts[1]), lang="en")
+                    integer_part = num2words(int(parts[0]), lang=LANG_CODES[self.chat_language])
+                    fractional_part = num2words(int(parts[1]), lang=LANG_CODES[self.chat_language])
                     return f"{integer_part} point {fractional_part}"
                 else:
-                    return num2words(int(num), lang="en")
+                    return num2words(int(num), lang=LANG_CODES[self.chat_language])
             except:
                 return num
 

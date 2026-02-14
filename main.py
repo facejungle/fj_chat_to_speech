@@ -26,17 +26,22 @@ warnings.filterwarnings("ignore", category=UserWarning)
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 BUFFER_SIZE = 15
+PAD = 10
+PAD_L = 20
+FONT_SZ = 12
+FONT_SZ_L = 18
+BG_COLOR = "#000"
 
 
 class FJChatVoice:
     def __init__(self):
-        self.window = ctk.CTk()
+        self.window = ctk.CTk(fg_color=BG_COLOR)
         self.window.title("FJ Chat Voice - Silero TTS")
         self.window.geometry("1200x800")
-        self.window.minsize(1000, 700)
+        self.window.resizable(False, False)
 
         # State variables
-        self.is_running = False
+        self.is_running_yt = False
         self.is_tts_ready = False
         self.chat_thread = None
         self.message_queue = queue.Queue()
@@ -52,8 +57,8 @@ class FJChatVoice:
         self.model_lock = threading.Lock()
 
         # YouTube API variables
-        self.api_key = ""
-        self.video_id = ""
+        self.api_key_yt = ""
+        self.video_id_yt = ""
         self.youtube = None
         self.processed_messages = set()
         self.chat_id = None
@@ -98,112 +103,158 @@ class FJChatVoice:
         self.window.after(1000, self.check_cached_model)
 
         # Start queue processing
-        self.process_message_queue()
         self.process_audio_queue()
         self.process_speech_queue()
 
     def setup_ui(self):
         """Create user interface"""
         # Main container
-        self.main_container = ctk.CTkFrame(self.window)
-        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_container = ctk.CTkFrame(self.window, bg_color=BG_COLOR, fg_color=BG_COLOR)
+        self.main_container.pack(fill="both", expand=True)
 
         # Create tabs
-        self.tabview = ctk.CTkTabview(self.main_container)
-        self.tabview.pack(fill="both", expand=True, padx=5, pady=5)
+        self.tabview = ctk.CTkTabview(self.main_container, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        self.tabview.pack(fill="both", expand=True)
 
         # Tabs
-        self.tab_main = self.tabview.add("📺 Main")
-        self.tab_tts = self.tabview.add("🔊 TTS Settings")
-        self.tab_filters = self.tabview.add("⚙️ Filters")
-        self.tab_stats = self.tabview.add("📊 Statistics")
+        self.tab_main = self.tabview.add("📺 Chat")
+        self.tab_settings = self.tabview.add("⚙️ Settings")
+
+        self.setup_status_bar()
 
         self.setup_main_tab()
-        self.setup_tts_tab()
-        self.setup_filters_tab()
-        self.setup_stats_tab()
+        self.setup_settings_tab()
+
+    def setup_status_bar(self):
+        self.status_bar = ctk.CTkFrame(self.window, bg_color=BG_COLOR, fg_color=BG_COLOR, height=15)
+        self.status_bar.pack(fill="x")
+
+        # Real-time statistics
+        self.stats_label = ctk.CTkLabel(
+            self.status_bar, text="📊 Messages: 0 | Spoken: 0 | Spam: 0 | In queue: 0", font=ctk.CTkFont(size=FONT_SZ)
+        )
+        self.stats_label.pack(side="left", pady=(0, 5), padx=PAD)
+
+        # Audio indicator
+
+        self.audio_indicator = ctk.CTkLabel(self.status_bar, text="🟢", font=ctk.CTkFont(size=20), text_color="white")
+        self.audio_indicator.pack(side="right", pady=(0, 5), padx=PAD)
+
+        # Volume
+
+        volume_frame = ctk.CTkFrame(self.status_bar, bg_color=BG_COLOR, fg_color=BG_COLOR)
+        volume_frame.pack(side="right", padx=(PAD, 0))
+
+        ctk.CTkLabel(volume_frame, text="Volume:", font=ctk.CTkFont(size=FONT_SZ)).pack(side="left")
+
+        self.volume_var = ctk.DoubleVar(value=self.volume)
+        self.volume_slider = ctk.CTkSlider(
+            volume_frame, from_=0.0, to=2.0, variable=self.volume_var, command=self.change_volume, width=200
+        )
+        self.volume_slider.pack(side="left", padx=PAD)
+
+        self.volume_label = ctk.CTkLabel(volume_frame, text=f"{self.volume:.0%}", font=ctk.CTkFont(size=FONT_SZ))
+        self.volume_label.pack(side="left")
+
+        # Speech rate
+
+        speed_frame = ctk.CTkFrame(self.status_bar, bg_color=BG_COLOR, fg_color=BG_COLOR)
+        speed_frame.pack(side="right")
+
+        ctk.CTkLabel(speed_frame, text="Speech rate:", font=ctk.CTkFont(size=FONT_SZ)).pack(side="left")
+
+        self.speed_var = ctk.DoubleVar(value=self.speech_rate)
+        self.speed_slider = ctk.CTkSlider(
+            speed_frame,
+            from_=0.50,
+            to=1.50,
+            number_of_steps=100,
+            variable=self.speed_var,
+            command=self.change_speed,
+            width=200,
+        )
+        self.speed_slider.pack(side="left", padx=PAD)
+
+        self.speed_label = ctk.CTkLabel(speed_frame, text=f"{self.speech_rate:.2f}x", font=ctk.CTkFont(size=FONT_SZ))
+        self.speed_label.pack(side="left")
 
     def setup_main_tab(self):
         """Setup main tab"""
-        # === Top panel (API and connection) ===
         self.top_frame = ctk.CTkFrame(self.tab_main)
-        self.top_frame.pack(fill="x", padx=10, pady=(10, 5))
+        self.top_frame.pack(fill="x", pady=(0, PAD))
 
-        # Title
-        title_label = ctk.CTkLabel(
-            self.top_frame, text="FJ Chat Voice - Silero", font=ctk.CTkFont(size=24, weight="bold")
+        # Connection
+        connection_frame = ctk.CTkFrame(self.top_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        connection_frame.pack(fill="x")
+
+        ctk.CTkLabel(connection_frame, text="YouTube URL / ID", font=ctk.CTkFont(size=FONT_SZ), width=150).pack(
+            side="left", padx=PAD
         )
-        title_label.pack(pady=(10, 15))
 
-        # API key frame
-        api_frame = ctk.CTkFrame(self.top_frame)
-        api_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(api_frame, text="YouTube API Key:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
-        self.api_entry = ctk.CTkEntry(api_frame, width=500, placeholder_text="Enter your API key")
-        self.api_entry.pack(side="left", padx=5, fill="x", expand=True)
-        self.api_entry.insert(0, self.api_key)
-
-        self.save_api_btn = ctk.CTkButton(api_frame, text="💾 Save", width=100, command=self.save_api_key)
-        self.save_api_btn.pack(side="left", padx=5)
-
-        # Video ID frame
-        video_frame = ctk.CTkFrame(self.top_frame)
-        video_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(video_frame, text="Video ID / URL:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
-        self.video_entry = ctk.CTkEntry(
-            video_frame, width=500, placeholder_text="https://youtube.com/watch?v=... or video ID"
+        self.video_entry_yt = ctk.CTkEntry(
+            connection_frame, width=500, placeholder_text="https://youtube.com/watch?v=... or video ID"
         )
-        self.video_entry.pack(side="left", padx=5, fill="x", expand=True)
-        self.video_entry.insert(0, self.video_id)
+        self.video_entry_yt.pack(side="left", padx=PAD, fill="x", expand=True)
+        self.video_entry_yt.insert(0, self.video_id_yt)
 
-        # Control buttons frame
-        control_frame = ctk.CTkFrame(video_frame)
-        control_frame.pack(side="left", padx=5)
-
-        self.connect_btn = ctk.CTkButton(
-            control_frame,
-            text="🔌 Connect",
-            width=120,
-            command=self.toggle_connection,
-            fg_color="#28a745",
-            hover_color="#218838",
+        self.connect_btn_yt = ctk.CTkButton(
+            connection_frame,
+            text="Connect",
+            width=100,
+            command=self.toggle_connection_yt,
+            # fg_color="#28a745",
+            # hover_color="#218838",
         )
-        self.connect_btn.pack(side="left", padx=2)
+        self.connect_btn_yt.pack(side="left")
 
         # Connection status
-        self.connection_status = ctk.CTkLabel(
-            self.top_frame, text="⚪ Not connected", font=ctk.CTkFont(size=14, weight="bold")
+        self.connection_status_yt = ctk.CTkLabel(
+            connection_frame, text="🔴", font=ctk.CTkFont(size=20), text_color="red"
         )
-        self.connection_status.pack(pady=10)
+        self.connection_status_yt.pack(side="right", padx=PAD)
 
         # === Chat panel ===
-        self.chat_frame = ctk.CTkFrame(self.tab_main)
-        self.chat_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.chat_frame = ctk.CTkFrame(self.tab_main, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        self.chat_frame.pack(fill="both", expand=True)
 
-        chat_header_frame = ctk.CTkFrame(self.chat_frame)
-        chat_header_frame.pack(fill="x", padx=10, pady=(10, 5))
+        chat_header_frame = ctk.CTkFrame(self.chat_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        chat_header_frame.pack(fill="x", padx=PAD, pady=PAD)
 
-        ctk.CTkLabel(chat_header_frame, text="💬 Message Log", font=ctk.CTkFont(size=16, weight="bold")).pack(
+        ctk.CTkLabel(chat_header_frame, text="💬 Message Log", font=ctk.CTkFont(size=FONT_SZ, weight="bold")).pack(
             side="left"
         )
 
         # Auto-scroll checkbox
         self.auto_scroll_var = ctk.BooleanVar(value=self.auto_scroll)
         self.auto_scroll_check = ctk.CTkCheckBox(chat_header_frame, text="Auto-scroll", variable=self.auto_scroll_var)
-        self.auto_scroll_check.pack(side="left", padx=20)
+        self.auto_scroll_check.pack(side="left", padx=(PAD, 0))
 
-        # Real-time statistics
-        self.stats_label = ctk.CTkLabel(
-            chat_header_frame, text="📊 Messages: 0 | Spoken: 0 | Spam: 0 | In queue: 0", font=ctk.CTkFont(size=12)
+        # Bottom panel
+        bottom_frame = ctk.CTkFrame(chat_header_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        bottom_frame.pack(fill="x", side="right")
+
+        self.clear_btn = ctk.CTkButton(
+            bottom_frame,
+            text="🧹 Clear log",
+            width=100,
+            command=self.clear_chat,
+            # fg_color="#6c757d",
+            # hover_color="#5a6268",
         )
-        self.stats_label.pack(side="right", padx=10)
+        self.clear_btn.pack(side="left")
+
+        self.export_btn = ctk.CTkButton(
+            bottom_frame,
+            text="💾 Export log",
+            width=100,
+            command=self.export_chat_log,
+            # fg_color="#17a2b8",
+            # hover_color="#138496",
+        )
+        self.export_btn.pack(side="left", padx=(PAD, 0))
 
         # Chat text box
-        self.chat_text = ctk.CTkTextbox(self.chat_frame, wrap="word", font=ctk.CTkFont(size=12), state="disabled")
+        self.chat_text = ctk.CTkTextbox(self.chat_frame, wrap="word", font=ctk.CTkFont(size=FONT_SZ), state="disabled")
         self.chat_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # Tag configuration for colored text
@@ -214,153 +265,164 @@ class FJChatVoice:
         self.chat_text.tag_config("author", foreground="#17a2b8")
         self.chat_text.tag_config("spam", foreground="#ffc107", background="#343a40")
         self.chat_text.tag_config("paused", foreground="#ffc107")
+        self.chat_text.tag_config("youtube", foreground="#9c1111")
 
-        # Bottom panel
-        bottom_frame = ctk.CTkFrame(self.tab_main)
-        bottom_frame.pack(fill="x", padx=10, pady=5)
+    def setup_settings_tab(self):
+        left_frame = ctk.CTkFrame(self.tab_settings, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        left_frame.pack(fill="both", expand=True, side="left", padx=PAD)
 
-        self.clear_btn = ctk.CTkButton(
-            bottom_frame,
-            text="🧹 Clear log",
-            width=120,
-            command=self.clear_chat,
-            fg_color="#6c757d",
-            hover_color="#5a6268",
+        language_frame = ctk.CTkFrame(left_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        language_frame.pack(pady=(PAD, PAD_L), padx=PAD, fill="x", side="top", anchor="n")
+        ctk.CTkLabel(language_frame, text="Language", font=ctk.CTkFont(size=FONT_SZ_L)).pack(side="left")
+        language_select = ctk.CTkOptionMenu(language_frame, values=["English", "Russian"])
+        language_select.set("English")
+        language_select.pack(side="right")
+
+        credentials_frame = ctk.CTkFrame(left_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        credentials_frame.pack(pady=(PAD, PAD_L), padx=PAD, fill="x", side="top", anchor="n")
+        ctk.CTkLabel(credentials_frame, text="Credentials", font=ctk.CTkFont(size=FONT_SZ_L), anchor="nw").pack(
+            expand=True, fill="x", anchor="n"
         )
-        self.clear_btn.pack(side="left", padx=5)
 
-        self.export_btn = ctk.CTkButton(
-            bottom_frame,
-            text="💾 Export log",
-            width=120,
-            command=self.export_chat_log,
-            fg_color="#17a2b8",
-            hover_color="#138496",
+        yt_cred_frame = ctk.CTkFrame(credentials_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        yt_cred_frame.pack(fill="x", expand=True, side="top", anchor="n", pady=(0, PAD))
+        ctk.CTkLabel(yt_cred_frame, text="Google API Key", font=ctk.CTkFont(size=FONT_SZ), width=150).pack(side="left")
+        self.api_entry_yt = ctk.CTkEntry(yt_cred_frame, width=200, placeholder_text="Enter your API key")
+        self.api_entry_yt.pack(side="left", fill="x", expand=True)
+        self.api_entry_yt.insert(0, self.api_key_yt)
+        self.save_api_btn_yt = ctk.CTkButton(yt_cred_frame, text="Save", width=100, command=self.save_yt_api_key)
+        self.save_api_btn_yt.pack(side="right", padx=(PAD, 0))
+
+        tw_cred_frame = ctk.CTkFrame(credentials_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        tw_cred_frame.pack(fill="x", expand=True, side="top", anchor="n")
+        ctk.CTkLabel(tw_cred_frame, text="Another credentials", font=ctk.CTkFont(size=FONT_SZ), width=150).pack(
+            side="left"
         )
-        self.export_btn.pack(side="left", padx=5)
+        self.tw_api_entry = ctk.CTkEntry(tw_cred_frame, width=200, placeholder_text="Enter your API key")
+        self.tw_api_entry.pack(side="left", fill="x", expand=True)
+        self.tw_api_entry.insert(0, self.api_key_yt)
+        self.save_tw_api_btn = ctk.CTkButton(tw_cred_frame, text="Save", width=100, command=self.save_yt_api_key)
+        self.save_tw_api_btn.pack(side="right", padx=(PAD, 0))
 
-        # Progress bar and indicators
-        self.progress_bar = ctk.CTkProgressBar(bottom_frame)
-        self.progress_bar.pack(side="right", padx=10, fill="x", expand=True)
-        self.progress_bar.set(0)
+        # = Silero model =
 
-        self.audio_indicator = ctk.CTkLabel(bottom_frame, text="⚪", font=ctk.CTkFont(size=20))
-        self.audio_indicator.pack(side="right", padx=10)
+        silero_frame = ctk.CTkFrame(left_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        silero_frame.pack(pady=PAD, padx=PAD, fill="x", side="top", anchor="n")
 
-    def setup_tts_tab(self):
-        """Setup TTS tab"""
-        # Model loading frame
-        model_frame = ctk.CTkFrame(self.tab_tts)
-        model_frame.pack(fill="x", padx=20, pady=20)
+        silero_label_frame = ctk.CTkFrame(silero_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        silero_label_frame.pack(fill="x", pady=(0, PAD), expand=True)
 
-        ctk.CTkLabel(model_frame, text="Silero TTS Model", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
-
-        # TTS initialization button
-        self.init_tts_btn = ctk.CTkButton(
-            model_frame,
-            text="📥 Load Silero model",
-            command=self.init_silero,
-            width=300,
-            height=40,
-            font=ctk.CTkFont(size=14),
+        ctk.CTkLabel(silero_label_frame, text="Silero model", font=ctk.CTkFont(size=FONT_SZ_L)).pack(side="left")
+        self.tts_status_label = ctk.CTkLabel(
+            silero_label_frame, text="⚪ Silero not loaded", font=ctk.CTkFont(size=FONT_SZ)
         )
-        self.init_tts_btn.pack(pady=10)
+        self.tts_status_label.pack(side="right")
+        # self.init_tts_btn = ctk.CTkButton(
+        #     silero_frame,
+        #     text="📥 Load Silero model",
+        #     command=self.init_silero,
+        #     width=100,
+        #     font=ctk.CTkFont(size=FONT_SZ),
+        # )
+        # self.init_tts_btn.pack(side="left", fill="x")
 
-        # TTS status
-        self.tts_status_label = ctk.CTkLabel(model_frame, text="⚪ Silero not loaded", font=ctk.CTkFont(size=13))
-        self.tts_status_label.pack(pady=(0, 10))
-
-        # Voice settings frame
-        voice_frame = ctk.CTkFrame(self.tab_tts)
-        voice_frame.pack(fill="x", padx=20, pady=10)
-
-        ctk.CTkLabel(voice_frame, text="🔊 Voice Settings", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-
+        model_cfg_frame = ctk.CTkFrame(silero_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        model_cfg_frame.pack(fill="x", pady=(0, PAD))
+        # Language selection
+        model_language_select_frame = ctk.CTkFrame(model_cfg_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        model_language_select_frame.pack(side="left")
+        ctk.CTkLabel(model_language_select_frame, text="Chat language", font=ctk.CTkFont(size=FONT_SZ), width=150).pack(
+            side="left"
+        )
+        model_language_select = ctk.CTkOptionMenu(model_language_select_frame, values=["English", "Russian"])
+        model_language_select.set("Russian")
+        model_language_select.pack(side="left")
         # Voice selection
-        voice_select_frame = ctk.CTkFrame(voice_frame)
-        voice_select_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(voice_select_frame, text="Voice:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
+        voice_select_frame = ctk.CTkFrame(model_cfg_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        voice_select_frame.pack(side="left")
+        ctk.CTkLabel(voice_select_frame, text="Voice", font=ctk.CTkFont(size=FONT_SZ), width=150).pack(side="left")
         self.voice_var = ctk.StringVar(value=self.speaker)
-        self.voice_combo = ctk.CTkComboBox(
+        self.voice_combo = ctk.CTkOptionMenu(
             voice_select_frame,
             values=["xenia", "aidar", "baya", "kseniya", "eugene"],
             variable=self.voice_var,
-            width=200,
             command=self.change_voice,
         )
-        self.voice_combo.pack(side="left", padx=5)
+        self.voice_combo.pack(side="left")
 
-        voice_info = ctk.CTkLabel(
-            voice_select_frame,
-            text="ⓘ xenia (female), aidar (male), baya (female), kseniya (female), eugene (male)",
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-        )
-        voice_info.pack(side="left", padx=10)
-
-        # Speech rate
-        speed_frame = ctk.CTkFrame(voice_frame)
-        speed_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(speed_frame, text="Speech rate:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
-        self.speed_var = ctk.DoubleVar(value=self.speech_rate)
-        self.speed_slider = ctk.CTkSlider(
-            speed_frame, from_=0.5, to=2.0, variable=self.speed_var, command=self.change_speed, width=200
-        )
-        self.speed_slider.pack(side="left", padx=10)
-
-        self.speed_label = ctk.CTkLabel(speed_frame, text=f"{self.speech_rate:.1f}x", font=ctk.CTkFont(size=13))
-        self.speed_label.pack(side="left", padx=5)
-
-        # Volume
-        volume_frame = ctk.CTkFrame(voice_frame)
-        volume_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(volume_frame, text="Volume:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
-        self.volume_var = ctk.DoubleVar(value=self.volume)
-        self.volume_slider = ctk.CTkSlider(
-            volume_frame, from_=0.0, to=2.0, variable=self.volume_var, command=self.change_volume, width=200
-        )
-        self.volume_slider.pack(side="left", padx=10)
-
-        self.volume_label = ctk.CTkLabel(volume_frame, text=f"{self.volume:.0%}", font=ctk.CTkFont(size=13))
-        self.volume_label.pack(side="left", padx=5)
-
-        # Additional TTS settings
-        options_frame = ctk.CTkFrame(self.tab_tts)
-        options_frame.pack(fill="x", padx=20, pady=10)
-
-        ctk.CTkLabel(options_frame, text="⚙️ Additional", font=ctk.CTkFont(size=16, weight="bold")).pack(
-            pady=10, side="top", expand=True, fill="y"
-        )
+        options_frame = ctk.CTkFrame(silero_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        options_frame.pack(fill="x", pady=(0, PAD))
 
         self.put_accent_var = ctk.BooleanVar(value=self.put_accent)
         self.put_accent_check = ctk.CTkCheckBox(
             options_frame, text="Add accents", variable=self.put_accent_var, command=self.toggle_accent
         )
-        self.put_accent_check.pack(pady=5, padx=10, side="left")
+        self.put_accent_check.pack(side="left", padx=(0, PAD))
 
         self.put_yo_var = ctk.BooleanVar(value=self.put_yo)
         self.put_yo_check = ctk.CTkCheckBox(
-            options_frame, text="Replace e with yo", variable=self.put_yo_var, command=self.toggle_yo
+            options_frame, text="Replace e with yo (Russian)", variable=self.put_yo_var, command=self.toggle_yo
         )
-        self.put_yo_check.pack(pady=5, side="left")
+        self.put_yo_check.pack(side="left")
 
-    def setup_filters_tab(self):
-        """Setup filters tab"""
+        # = Message queue settings =
+
+        buffer_frame = ctk.CTkFrame(left_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        buffer_frame.pack(pady=PAD, padx=PAD, fill="x", side="top", anchor="n")
+
+        ctk.CTkLabel(buffer_frame, text="Message Queue", font=ctk.CTkFont(size=FONT_SZ_L), anchor="nw").pack(
+            expand=True, fill="x", anchor="n"
+        )
+
+        buffer_size_frame = ctk.CTkFrame(buffer_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        buffer_size_frame.pack(fill="x")
+
+        ctk.CTkLabel(buffer_size_frame, text="Queue depth:", font=ctk.CTkFont(size=13)).pack(side="left")
+
+        self.buffer_size_var = ctk.StringVar(value=str(self.buffer_maxsize))
+
+        spinbox_container = ctk.CTkFrame(buffer_size_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        spinbox_container.pack(side="left", padx=10)
+
+        self.buffer_size_entry = ctk.CTkEntry(spinbox_container, width=80, textvariable=self.buffer_size_var)
+        self.buffer_size_entry.pack(side="left", padx=(0, 5))
+
+        button_frame = ctk.CTkFrame(spinbox_container, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        button_frame.pack(side="left")
+
+        self.buffer_up_btn = ctk.CTkButton(
+            button_frame, text="▲", width=30, height=20, command=self.increase_buffer_size
+        )
+        self.buffer_up_btn.pack(side="top", pady=(0, 2))
+
+        self.buffer_down_btn = ctk.CTkButton(
+            button_frame, text="▼", width=30, height=20, command=self.decrease_buffer_size
+        )
+        self.buffer_down_btn.pack(side="bottom")
+
+        self.save_buffer_btn = ctk.CTkButton(buffer_size_frame, text="Apply", width=100, command=self.save_buffer_size)
+        self.save_buffer_btn.pack(side="left", padx=10)
+
+        ctk.CTkLabel(
+            buffer_size_frame,
+            text="(number of messages waiting to be spoken)",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+        ).pack(side="left", padx=5)
+
+        # === RIGHT FRAME ===
+
+        right_frame = ctk.CTkFrame(self.tab_settings, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        right_frame.pack(fill="both", expand=True, side="right", padx=PAD)
+
         # Main filters
-        main_filters = ctk.CTkFrame(self.tab_filters)
-        main_filters.pack(fill="x", padx=20, pady=20)
-
-        ctk.CTkLabel(main_filters, text="📋 Main Filters", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-
-        # Filters grid
-        filters_grid = ctk.CTkFrame(main_filters)
-        filters_grid.pack(fill="x", padx=20, pady=5)
+        main_filters_frame = ctk.CTkFrame(right_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        main_filters_frame.pack(pady=(PAD, PAD_L), padx=PAD, fill="x", side="top", anchor="n")
+        ctk.CTkLabel(main_filters_frame, text="Main filters", font=ctk.CTkFont(size=FONT_SZ_L), anchor="nw").pack(
+            expand=True, fill="x", anchor="n"
+        )
+        filters_grid = ctk.CTkFrame(main_filters_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        filters_grid.pack(fill="x")
 
         # Minimum length
         ctk.CTkLabel(filters_grid, text="Min message length:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
@@ -413,60 +475,17 @@ class FJChatVoice:
         )
         self.subscribers_only_check.grid(row=4, column=2, columnspan=2, padx=5, pady=5, sticky="w")
 
-        # === Message queue settings ===
-        buffer_frame = ctk.CTkFrame(self.tab_filters)
-        buffer_frame.pack(fill="x", padx=20, pady=20)
+        # == Stop words ==
 
-        ctk.CTkLabel(buffer_frame, text="📋 Message Queue", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-
-        buffer_size_frame = ctk.CTkFrame(buffer_frame)
-        buffer_size_frame.pack(fill="x", padx=20, pady=5)
-
-        ctk.CTkLabel(buffer_size_frame, text="Queue depth:", font=ctk.CTkFont(size=13)).pack(side="left", padx=5)
-
-        self.buffer_size_var = ctk.StringVar(value=str(self.buffer_maxsize))
-
-        spinbox_container = ctk.CTkFrame(buffer_size_frame)
-        spinbox_container.pack(side="left", padx=10)
-
-        self.buffer_size_entry = ctk.CTkEntry(spinbox_container, width=80, textvariable=self.buffer_size_var)
-        self.buffer_size_entry.pack(side="left", padx=(0, 5))
-
-        button_frame = ctk.CTkFrame(spinbox_container)
-        button_frame.pack(side="left")
-
-        self.buffer_up_btn = ctk.CTkButton(
-            button_frame, text="▲", width=30, height=20, command=self.increase_buffer_size
-        )
-        self.buffer_up_btn.pack(side="top", pady=(0, 2))
-
-        self.buffer_down_btn = ctk.CTkButton(
-            button_frame, text="▼", width=30, height=20, command=self.decrease_buffer_size
-        )
-        self.buffer_down_btn.pack(side="bottom")
-
-        self.save_buffer_btn = ctk.CTkButton(
-            buffer_size_frame, text="💾 Apply", width=100, command=self.save_buffer_size
-        )
-        self.save_buffer_btn.pack(side="left", padx=10)
+        stop_words_frame = ctk.CTkFrame(right_frame, fg_color=BG_COLOR, bg_color=BG_COLOR)
+        stop_words_frame.pack(fill="x")
 
         ctk.CTkLabel(
-            buffer_size_frame,
-            text="(number of messages waiting to be spoken)",
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-        ).pack(side="left", padx=5)
+            stop_words_frame, text="Stop words (ignore messages)", font=ctk.CTkFont(size=FONT_SZ_L), anchor="nw"
+        ).pack(expand=True, fill="x", anchor="n")
 
-        # Stop words
-        stop_words_frame = ctk.CTkFrame(self.tab_filters)
-        stop_words_frame.pack(fill="x", padx=20, pady=20)
-
-        ctk.CTkLabel(
-            stop_words_frame, text="🚫 Stop words (ignore messages)", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(pady=10)
-
-        self.stop_words_text = ctk.CTkTextbox(stop_words_frame, height=100, width=600)
-        self.stop_words_text.pack(pady=10, padx=20)
+        self.stop_words_text = ctk.CTkTextbox(stop_words_frame)
+        self.stop_words_text.pack(fill="both")
         self.stop_words_text.insert("1.0", "\n".join(self.stop_words))
 
         save_stop_words_btn = ctk.CTkButton(
@@ -492,33 +511,6 @@ class FJChatVoice:
         except ValueError:
             self.buffer_size_var.set(str(self.buffer_maxsize))
 
-    def setup_stats_tab(self):
-        """Setup statistics tab"""
-        stats_frame = ctk.CTkFrame(self.tab_stats)
-        stats_frame.pack(fill="x", padx=20, pady=20)
-
-        ctk.CTkLabel(stats_frame, text="📈 Overall Statistics", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=10)
-
-        self.stats_text = ctk.CTkTextbox(stats_frame, height=200, width=600, font=ctk.CTkFont(size=13))
-        self.stats_text.pack(pady=10, padx=20)
-        self.stats_text.insert("1.0", "Statistics will be available after connecting to chat")
-        self.stats_text.configure(state="disabled")
-
-        refresh_stats_btn = ctk.CTkButton(
-            stats_frame, text="🔄 Refresh statistics", width=200, command=self.update_stats_display
-        )
-        refresh_stats_btn.pack(pady=10)
-
-        reset_stats_btn = ctk.CTkButton(
-            stats_frame,
-            text="🔄 Reset statistics",
-            width=200,
-            command=self.reset_stats,
-            fg_color="#dc3545",
-            hover_color="#c82333",
-        )
-        reset_stats_btn.pack(pady=10)
-
     def check_cached_model(self):
         """Check for cached model and auto-load"""
 
@@ -527,12 +519,12 @@ class FJChatVoice:
 
         try:
             if os.path.exists(cache_dir):
-                self.add_system_message(
-                    "🔄 Found cached Silero model, loading... (this may take 1-2 minutes)", "system"
+                self.display_system_message(
+                    "Found cached Silero model, loading... (this may take 1-2 minutes)", "system"
                 )
                 self.init_silero()
             else:
-                self.add_system_message("⚪ Silero model not found in cache, click the load button", "system")
+                self.display_system_message("Silero model not found in cache, click the load button", "system")
         except Exception as e:
             pass
 
@@ -542,9 +534,6 @@ class FJChatVoice:
         def init_thread():
             with self.model_lock:
                 try:
-                    self.window.after(
-                        0, lambda: self.init_tts_btn.configure(text="⏳ Loading model...", state="disabled")
-                    )
                     self.window.after(
                         0,
                         lambda: self.tts_status_label.configure(
@@ -577,17 +566,12 @@ class FJChatVoice:
 
                     self.window.after(
                         0,
-                        lambda: self.tts_status_label.configure(
-                            text=f"✅ Silero TTS ready! Voice: {self.speaker}", text_color="#28a745"
-                        ),
+                        lambda: self.tts_status_label.configure(text=f"✅ Silero TTS ready!", text_color="#28a745"),
                     )
+
                     self.window.after(
-                        0,
-                        lambda: self.init_tts_btn.configure(
-                            text="✓ Model loaded", state="disabled", fg_color="#28a745"
-                        ),
+                        0, lambda: self.display_system_message("Silero TTS successfully loaded", "success")
                     )
-                    self.window.after(0, lambda: self.add_system_message("Silero TTS successfully loaded", "success"))
 
                 except Exception as e:
                     error_msg = str(e)
@@ -597,9 +581,8 @@ class FJChatVoice:
                             text=f"❌ Loading error: {err}", text_color="#dc3545"
                         ),
                     )
-                    self.window.after(0, lambda: self.init_tts_btn.configure(text="🔄 Retry loading", state="normal"))
                     self.window.after(
-                        0, lambda err=error_msg: self.add_system_message(f"Error loading Silero: {err}", "error")
+                        0, lambda err=error_msg: self.display_system_message(f"Error loading Silero: {err}", "error")
                     )
                 finally:
                     gc.collect()
@@ -684,12 +667,12 @@ class FJChatVoice:
 
             except Exception as e:
                 error_msg = str(e)
-                self.window.after(0, lambda err=error_msg: self.add_system_message(f"TTS error: {err}", "error"))
+                self.window.after(0, lambda err=error_msg: self.display_system_message(f"TTS error: {err}", "error"))
                 return False
 
     def process_speech_queue(self):
         """Process message queue for TTS"""
-        if self.is_running and self.silero_available and not self.is_speaking:
+        if self.is_running_yt and self.silero_available and not self.is_speaking:
             try:
                 with self.speech_lock:
                     # Check delay
@@ -720,7 +703,7 @@ class FJChatVoice:
                             except Exception as e:
                                 error_msg = str(e)
                                 self.window.after(
-                                    0, lambda err=error_msg: self.add_system_message(f"TTS error: {err}", "error")
+                                    0, lambda err=error_msg: self.display_system_message(f"TTS error: {err}", "error")
                                 )
                             finally:
                                 self.is_speaking = False
@@ -728,7 +711,7 @@ class FJChatVoice:
                         threading.Thread(target=speak_and_continue, daemon=True).start()
 
             except Exception as e:
-                self.add_system_message(f"Error in speech queue: {e}", "error")
+                self.display_system_message(f"Error in speech queue: {e}", "error")
                 self.is_speaking = False
 
         self.window.after(200, self.process_speech_queue)
@@ -751,7 +734,7 @@ class FJChatVoice:
                             print(f"Audio playback error: {e}")
                         finally:
                             self.is_speaking = False
-                            self.window.after(0, lambda: self.audio_indicator.configure(text="⚪", text_color="white"))
+                            self.window.after(0, lambda: self.audio_indicator.configure(text="🔴", text_color="white"))
                             # Delete audio after playback
                             try:
                                 del audio_to_play
@@ -763,7 +746,7 @@ class FJChatVoice:
                     threading.Thread(target=play_audio, args=(audio_data,), daemon=True).start()
         except Exception as e:
             self.is_speaking = False
-            self.window.after(0, lambda: self.audio_indicator.configure(text="⚪", text_color="white"))
+            self.window.after(0, lambda: self.audio_indicator.configure(text="🔴", text_color="white"))
             print(f"Audio queue error: {e}")
 
         self.window.after(100, self.process_audio_queue)
@@ -835,32 +818,38 @@ class FJChatVoice:
     def get_chat_id(self):
         """Get chat ID"""
         try:
-            response = self.youtube.videos().list(part="liveStreamingDetails", id=self.video_id).execute()
+            response = self.youtube.videos().list(part="liveStreamingDetails", id=self.video_id_yt).execute()
 
             if response.get("items"):
                 details = response["items"][0].get("liveStreamingDetails", {})
                 return details.get("activeLiveChatId")
             else:
-                self.add_system_message("Video not found or not a live stream", "error")
+                self.display_system_message("Video not found or not a live stream", "error")
         except Exception as e:
-            self.add_system_message(f"Error getting chat: {e}", "error")
+            self.display_system_message(f"Error getting chat: {e}", "error")
         return None
 
-    def fetch_messages(self):
-        """Fetch messages from chat"""
+    def fetch_messages_yt(self):
+        """Fetch messages from YouTube chat"""
         self.chat_id = self.get_chat_id()
         if not self.chat_id:
             self.window.after(
-                0, lambda: self.add_system_message("Chat not found. Make sure the stream is active.", "error")
+                0,
+                lambda: self.display_system_message("YouTube chat not found. Make sure the stream is active.", "error"),
             )
-            self.window.after(0, self.toggle_connection)
+            self.window.after(0, self.toggle_connection_yt)
             return
 
-        self.window.after(0, lambda: self.add_system_message("✓ Connected to chat! Waiting for messages...", "success"))
+        self.window.after(
+            0, lambda: self.display_system_message("Connected to YouTube chat! Waiting for messages...", "success")
+        )
 
         next_token = None
 
-        while self.is_running:
+        while self.is_running_yt:
+            if self.is_speaking or not self.audio_queue.empty():
+                time.sleep(0.5)
+                continue
             try:
                 self.is_fetching = True
 
@@ -873,7 +862,7 @@ class FJChatVoice:
                 next_token = response.get("nextPageToken")
 
                 for item in response.get("items", []):
-                    if not self.is_running:
+                    if not self.is_running_yt:
                         break
 
                     msg_id = item["id"]
@@ -919,16 +908,16 @@ class FJChatVoice:
                             cleaned = cleaned[:max_len] + "..."
 
                         if self.is_spam(author, cleaned):
-                            self.window.after(0, self.display_spam_message, author, cleaned)
+                            self.window.after(0, self.display_spam_message, "youtube", author, cleaned)
                             continue
 
                         if self.contains_stop_words(cleaned):
                             continue
 
                         if cleaned:
-                            self.window.after(0, self.display_message, author, cleaned)
+                            self.window.after(0, self.display_message, "youtube", author, cleaned)
 
-                            if self.silero_available and self.is_running:
+                            if self.silero_available and self.is_running_yt:
                                 self.message_buffer.append((author, cleaned))
 
                 self.window.after(0, self.update_stats)
@@ -942,18 +931,22 @@ class FJChatVoice:
             except Exception as e:
                 error_msg = str(e)
                 self.is_fetching = False
-                if self.is_running:
+                if self.is_running_yt:
                     self.window.after(
-                        0, lambda err=error_msg: self.add_system_message(f"Error fetching messages: {err}", "error")
+                        0,
+                        lambda err=error_msg: self.display_system_message(
+                            f"Error fetching YouTube messages: {err}", "error"
+                        ),
                     )
                     time.sleep(5)
 
-    def display_message(self, author, message):
+    def display_message(self, platform, author, message):
         """Display message in log"""
         time_str = datetime.now().strftime("%H:%M:%S")
 
         self.chat_text.configure(state="normal")
         self.chat_text.insert("end", f"[{time_str}] ")
+        self.chat_text.insert("end", f"[{platform}] ", platform)
         self.chat_text.insert("end", f"{author}: ", "author")
         self.chat_text.insert("end", f"{message}\n", "message")
         self.chat_text.configure(state="disabled")
@@ -961,12 +954,13 @@ class FJChatVoice:
         if self.auto_scroll_var.get():
             self.chat_text.see("end")
 
-    def display_spam_message(self, author, message):
+    def display_spam_message(self, platform, author, message):
         """Display spam message"""
         time_str = datetime.now().strftime("%H:%M:%S")
 
         self.chat_text.configure(state="normal")
         self.chat_text.insert("end", f"[{time_str}] ")
+        self.chat_text.insert("end", f"[{platform}] ", platform)
         self.chat_text.insert("end", f"{author}: ", "author")
         self.chat_text.insert("end", f"{message} ", "spam")
         self.chat_text.insert("end", f"[SPAM]\n", "error")
@@ -975,7 +969,7 @@ class FJChatVoice:
         if self.auto_scroll_var.get():
             self.chat_text.see("end")
 
-    def add_system_message(self, message, tag="system"):
+    def display_system_message(self, message, tag="system"):
         """Add system message"""
         time_str = datetime.now().strftime("%H:%M:%S")
 
@@ -993,50 +987,6 @@ class FJChatVoice:
             text=f"📊 Messages: {self.messages_count} | Spoken: {self.spoken_count} | Spam: {self.spam_count} | In queue: {queue_size}"
         )
 
-        if self.is_speaking:
-            current_progress = self.progress_bar.get()
-            new_progress = current_progress + 0.01
-            if new_progress > 1:
-                new_progress = 0
-            self.progress_bar.set(new_progress)
-
-    def update_stats_display(self):
-        """Update statistics display"""
-        if not self.start_time:
-            self.start_time = datetime.now()
-
-        elapsed = datetime.now() - self.start_time
-        hours = elapsed.seconds // 3600
-        minutes = (elapsed.seconds % 3600) // 60
-        queue_size = len(self.message_buffer) if self.message_buffer else 0
-
-        stats_text = f"""
-        ⏱️ Runtime: {hours}h {minutes}m
-        💬 Total messages: {self.messages_count}
-        🔊 Spoken messages: {self.spoken_count}
-        🚫 Filtered spam: {self.spam_count}
-        📝 Messages in buffer: {queue_size}/{self.buffer_maxsize}
-        🎤 Current voice: {self.speaker}
-        ⚡ Speech rate: {self.speech_rate:.1f}x
-        🔊 Volume: {self.volume:.0%}
-        
-        Filter settings:
-        • Min length: {self.min_length_var.get()}
-        • Max length: {self.max_length_var.get()}
-        • Delay: {self.delay_var.get()} sec
-        • Queue depth: {self.buffer_maxsize}
-        • Filter emojis: {'✅' if self.filter_emojis_var.get() else '❌'}
-        • Filter links: {'✅' if self.filter_links_var.get() else '❌'}
-        • Anti-spam: {'✅' if self.filter_repeats_var.get() else '❌'}
-        • Read names: {'✅' if self.read_names_var.get() else '❌'}
-        • Subscribers only: {'✅' if self.subscribers_only_var.get() else '❌'}
-        """
-
-        self.stats_text.configure(state="normal")
-        self.stats_text.delete("1.0", "end")
-        self.stats_text.insert("1.0", stats_text)
-        self.stats_text.configure(state="disabled")
-
     def reset_stats(self):
         """Reset statistics"""
         self.messages_count = 0
@@ -1049,15 +999,14 @@ class FJChatVoice:
         self.last_message_time.clear()
         self.start_time = datetime.now()
         self.update_stats()
-        self.update_stats_display()
-        self.add_system_message("Statistics reset")
+        self.display_system_message("Statistics reset")
 
     def clear_chat(self):
         """Clear chat log"""
         self.chat_text.configure(state="normal")
         self.chat_text.delete("0.0", "end")
         self.chat_text.configure(state="disabled")
-        self.add_system_message("Log cleared")
+        self.display_system_message("Log cleared")
 
     def export_chat_log(self):
         """Export chat log to file"""
@@ -1075,21 +1024,21 @@ class FJChatVoice:
 
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(content)
-                self.add_system_message(f"Log exported to {filename}", "success")
+                self.display_system_message(f"Log exported to {filename}", "success")
             except Exception as e:
-                self.add_system_message(f"Export error: {e}", "error")
+                self.display_system_message(f"Export error: {e}", "error")
 
     def change_voice(self, choice):
         """Change voice"""
         self.speaker = choice
         if self.silero_available:
-            self.add_system_message(f"Voice changed to: {choice}")
+            self.display_system_message(f"Voice changed to: {choice}")
         self.save_settings()
 
     def change_speed(self, value):
         """Change speech rate"""
         self.speech_rate = float(value)
-        self.speed_label.configure(text=f"{self.speech_rate:.1f}x")
+        self.speed_label.configure(text=f"{self.speech_rate:.2f}x")
         self.save_settings()
 
     def change_volume(self, value):
@@ -1115,17 +1064,17 @@ class FJChatVoice:
 
             if not value_str or value_str.strip() == "":
                 self.buffer_size_var.set(str(self.buffer_maxsize))
-                self.add_system_message("Please enter a number", "error")
+                self.display_system_message("Please enter a number", "error")
                 return
 
             new_size = int(float(value_str))
 
             if new_size < 1:
                 new_size = 10
-                self.add_system_message("Queue depth cannot be less than 1, set to 10", "warning")
+                self.display_system_message("Queue depth cannot be less than 1, set to 10", "warning")
             if new_size > 200:
                 new_size = 200
-                self.add_system_message("Maximum queue depth is 200", "warning")
+                self.display_system_message("Maximum queue depth is 200", "warning")
 
             self.buffer_maxsize = new_size
             old_buffer = list(self.message_buffer) if self.message_buffer else []
@@ -1135,28 +1084,28 @@ class FJChatVoice:
                     self.message_buffer.append(item)
 
             self.buffer_size_var.set(str(self.buffer_maxsize))
-            self.add_system_message(f"Queue depth changed to: {self.buffer_maxsize}", "success")
+            self.display_system_message(f"Queue depth changed to: {self.buffer_maxsize}", "success")
             self.save_settings()
         except ValueError:
             self.buffer_size_var.set(str(self.buffer_maxsize))
-            self.add_system_message("Error: please enter a valid number", "error")
+            self.display_system_message("Error: please enter a valid number", "error")
 
     def save_stop_words(self):
         """Save stop words"""
         content = self.stop_words_text.get("1.0", "end").strip()
         self.stop_words = [word.strip() for word in content.split("\n") if word.strip()]
-        self.add_system_message(f"Saved {len(self.stop_words)} stop words", "success")
+        self.display_system_message(f"Saved {len(self.stop_words)} stop words", "success")
         self.save_settings()
 
-    def toggle_connection(self):
+    def toggle_connection_yt(self):
         """Connect/disconnect from chat"""
-        if not self.is_running:
+        if not self.is_running_yt:
             # Connect
-            if not self.api_entry.get():
+            if not self.api_entry_yt.get():
                 messagebox.showwarning("Warning", "Please enter API key")
                 return
 
-            if not self.video_entry.get():
+            if not self.video_entry_yt.get():
                 messagebox.showwarning("Warning", "Please enter video ID or URL")
                 return
 
@@ -1165,69 +1114,59 @@ class FJChatVoice:
                 if not result:
                     return
 
-            self.api_key = self.api_entry.get()
-            self.video_id = self.video_entry.get()
+            self.api_key_yt = self.api_entry_yt.get()
+            self.video_id_yt = self.video_entry_yt.get()
 
-            if "youtube.com" in self.video_id or "youtu.be" in self.video_id:
-                parsed = urllib.parse.urlparse(self.video_id)
+            if "youtube.com" in self.video_id_yt or "youtu.be" in self.video_id_yt:
+                parsed = urllib.parse.urlparse(self.video_id_yt)
                 if "youtu.be" in parsed.netloc:
-                    self.video_id = parsed.path[1:]
+                    self.video_id_yt = parsed.path[1:]
                 elif "watch" in parsed.path:
                     query = urllib.parse.parse_qs(parsed.query)
-                    self.video_id = query.get("v", [None])[0]
+                    self.video_id_yt = query.get("v", [None])[0]
                 elif "embed" in parsed.path:
-                    self.video_id = parsed.path.split("/")[-1]
+                    self.video_id_yt = parsed.path.split("/")[-1]
 
-            if not self.video_id:
+            if not self.video_id_yt:
                 messagebox.showerror("Error", "Could not determine video ID")
                 return
 
             try:
-                self.youtube = build("youtube", "v3", developerKey=self.api_key)
-                self.add_system_message("✓ YouTube API connected", "success")
+                self.youtube = build("youtube", "v3", developerKey=self.api_key_yt)
+                self.display_system_message("YouTube API connected", "success")
             except Exception as e:
                 messagebox.showerror("Error", f"Could not connect to YouTube API: {e}")
                 return
 
-            self.is_running = True
+            self.is_running_yt = True
             self.start_time = datetime.now()
-            self.chat_thread = threading.Thread(target=self.fetch_messages, daemon=True)
+            self.chat_thread = threading.Thread(target=self.fetch_messages_yt, daemon=True)
             self.chat_thread.start()
 
-            self.connect_btn.configure(text="🔌 Disconnect", fg_color="#dc3545", hover_color="#c82333")
-            self.connection_status.configure(text="🟢 Connected to chat", text_color="#28a745")
-            self.save_api_btn.configure(state="disabled")
-            self.init_tts_btn.configure(state="disabled")
+            self.connect_btn_yt.configure(text="Disconnect", fg_color="#dc3545", hover_color="#c82333")
+            self.connection_status_yt.configure(text="🟢", text_color="#218838")
+            self.save_api_btn_yt.configure(state="disabled")
 
         else:
-            self.is_running = False
+            self.is_running_yt = False
             self.is_fetching = False
-            self.connect_btn.configure(text="🔌 Connect", fg_color="#28a745", hover_color="#218838")
-            self.connection_status.configure(text="⚪ Disconnected", text_color="white")
-            self.save_api_btn.configure(state="normal")
-            if not self.silero_available:
-                self.init_tts_btn.configure(state="normal")
+            self.connect_btn_yt.configure(text="Connect", fg_color="#28a745", hover_color="#218838")
+            self.connection_status_yt.configure(text="🔴", text_color="red")
+            self.save_api_btn_yt.configure(state="normal")
 
-            self.add_system_message("Disconnected from chat")
+            self.display_system_message("Disconnected from chat")
 
-    def save_api_key(self):
+    def save_yt_api_key(self):
         """Save API key"""
-        self.api_key = self.api_entry.get()
+        self.api_key_yt = self.api_entry_yt.get()
         self.save_settings()
-        self.add_system_message("✓ API key saved", "success")
-
-    def process_message_queue(self):
-        """Process message queue for statistics"""
-        if hasattr(self, "stats_text") and self.is_running:
-            self.update_stats_display()
-
-        self.window.after(2000, self.process_message_queue)
+        self.display_system_message("YouTube API key saved", "success")
 
     def save_settings(self):
         """Save settings to file"""
         settings = {
-            "api_key": self.api_key,
-            "video_id": self.video_id,
+            "api_key": self.api_key_yt,
+            "video_id": self.video_id_yt,
             "silero_speaker": self.speaker,
             "speech_rate": self.speech_rate,
             "volume": self.volume,
@@ -1251,8 +1190,8 @@ class FJChatVoice:
             with open("settings.json", "w", encoding="utf-8") as f:
                 json.dump(settings, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            if hasattr(self, "add_system_message"):
-                self.add_system_message(f"Error saving settings: {e}", "error")
+            if hasattr(self, "display_system_message"):
+                self.display_system_message(f"Error saving settings: {e}", "error")
 
     def load_settings(self):
         """Load settings from file"""
@@ -1272,8 +1211,8 @@ class FJChatVoice:
         try:
             with open("settings.json", "r", encoding="utf-8") as f:
                 settings = json.load(f)
-                self.api_key = settings.get("api_key", "")
-                self.video_id = settings.get("video_id", "")
+                self.api_key_yt = settings.get("api_key", "")
+                self.video_id_yt = settings.get("video_id", "")
                 self.speaker = settings.get("silero_speaker", "xenia")
                 self.speech_rate = settings.get("speech_rate", 1.0)
                 self.volume = settings.get("volume", 1.0)
@@ -1307,7 +1246,7 @@ class FJChatVoice:
 
     def on_closing(self):
         """Handle window closing"""
-        self.is_running = False
+        self.is_running_yt = False
         self.is_fetching = False
 
         # Clear Silero model

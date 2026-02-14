@@ -1,0 +1,12 @@
+/dist
+/build
+/build_venv
+
+**/*.spec
+
+**/__pycache__
+.venv
+.vs
+
+settings.json
+

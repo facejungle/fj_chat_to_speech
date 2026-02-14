@@ -1,6 +1,7 @@
 # FJ Chat Voice - Text to Speech
 
 ![alt text](./docs/app_0.png)
+![alt text](./docs/app_1.png)
 
 ## Google API Key
 
@@ -35,11 +36,9 @@ python build.py
 
 ## Windows
 
-Uncomment tkinter in requirements.txt
-
 ```
 pip install pyinstaller pyinstaller-versionfile
 python build.py
 ```
 
-# Thanks for Silero https://github.com/snakers4/silero-models/ :)
+# Thanks for [Silero](https://github.com/snakers4/silero-models/) :)

@@ -119,10 +119,6 @@ def create_spec_file():
     excludes_str = str(EXCLUDES).replace("'", '"')
     hidden_imports_str = str(HIDDEN_IMPORTS).replace("'", '"')
 
-    # Check if model cache exists and add to datas
-    datas = [("settings.json", ".")]
-    datas_str = str(datas).replace("'", '"')
-
     spec_content = f"""# -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
@@ -131,7 +127,7 @@ a = Analysis(
     ['{MAIN_SCRIPT}'],
     pathex=[],
     binaries=[],
-    datas={datas_str},
+    datas=[],
     hiddenimports={hidden_imports_str},
     hookspath=[],
     hooksconfig={{}},
@@ -239,9 +235,6 @@ def build_with_upx():
         # Add excludes
         for exc in EXCLUDES:
             cmd.extend(["--exclude-module", exc])
-
-        # Add datas
-        cmd.extend(["--add-data", "settings.json:."])
 
     try:
         # Add more time for large builds

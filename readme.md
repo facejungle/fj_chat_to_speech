@@ -20,7 +20,7 @@ Implemented features:
 
 Limitations:
 
-- The Google API has a limit on the number of requests per day, typically 10,000. View your quota: [Google Console: Quotas](https://console.cloud.google.com/iam-admin/quotas)
+- The Google API has a limit on the number of requests per day, typically quota equal 10,000. View your quota: [Google Console: Quotas](https://console.cloud.google.com/iam-admin/quotas)
 
 ![alt text](./docs/app_0.png)
 ![alt text](./docs/app_1.png)

@@ -11,66 +11,74 @@ import subprocess
 import platform
 from pathlib import Path
 import stat
-import locale
 
-APP_NAME = "FJ_Chat_Voice"
+APP_NAME = "FJ Chat Voice"
 MAIN_SCRIPT = "main.py"
-VERSION = "1.0.4"
-FILE_NAME = f"{APP_NAME}_{VERSION}"
+FILE_NAME = "fj_chat_voice"
 
-TORCH_CACHE_DIR = Path.home() / ".cache" / "torch" / "hub"
+ICON_PATH = "img/icon.png"
+ICON_PATH_WINDOWS = "img/icon.ico"
+ICON_PATH_MAC = "img/icon.icns"
+
+
+def ensure_windows_icon():
+    """Convert PNG to ICO if needed"""
+    if platform.system() == "Windows" and not os.path.exists(ICON_PATH_WINDOWS):
+        if os.path.exists(ICON_PATH):
+            try:
+                from PIL import Image
+
+                img = Image.open(ICON_PATH)
+                img.save(ICON_PATH_WINDOWS, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+                print(f"✓ Created Windows icon: {ICON_PATH_WINDOWS}")
+                return ICON_PATH_WINDOWS
+            except ImportError:
+                print("⚠️ PIL not installed, skipping icon conversion")
+                return ICON_PATH
+            except Exception as e:
+                print(f"⚠️ Failed to convert icon: {e}")
+                return ICON_PATH
+    return ICON_PATH_WINDOWS if os.path.exists(ICON_PATH_WINDOWS) else ICON_PATH
+
 
 HIDDEN_IMPORTS = [
-    "sys",
-    "time",
-    "re",
-    "json",
-    "threading",
+    "collections",
+    "asyncio",
     "datetime",
-    "os",
-    "urllib",
-    "pathlib",
-    "queue",
+    "functools",
     "gc",
+    "json",
+    "html",
+    "re",
+    "sys",
+    "threading",
+    "inspect",
+    "multiprocessing",
+    "time",
+    "typing",
     "hashlib",
-    "warnings",
     "googleapiclient",
-    "googleapiclient.discovery",
+    "num2words",
     "torch",
     "sounddevice",
+    "PyQt6.QtWidgets",
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "scipy",
     "numpy",
-    "customtkinter",
-    "tkinter",
-    "collections",
-    "num2words",
-    "protobuf",
-    "requests",
-    "httplib2",
-    "filelock",
+    "googletrans",
+    "PIL",
+    "PIL.Image",
     "silero",
     "silero.utils",
 ]
 
-EXCLUDES = [
-    "torch.onnx",
-    "torch._inductor",
-    "torch._dynamo",
-    "torch.contrib",
-    # "tensorboard",
-    "torchvision",
-    "torchaudio.prototype",
-    "matplotlib",
-    # "scipy.signal.windows",
-    "notebook",
-    "jupyter",
-]
+EXCLUDES = []
 
 
 def create_virtual_env():
     """Create virtual environment for building"""
-    venv_path = "build_venv"
-
-    # Use absolute path
+    venv_path = ".venv2"
     venv_path = os.path.abspath(venv_path)
 
     if not os.path.exists(venv_path):
@@ -84,7 +92,6 @@ def create_virtual_env():
     else:
         print(f"✓ Using existing virtual environment at {venv_path}")
 
-    # Determine paths
     if platform.system() == "Windows":
         pip_path = os.path.join(venv_path, "Scripts", "pip.exe")
         python_path = os.path.join(venv_path, "Scripts", "python.exe")
@@ -97,7 +104,7 @@ def create_virtual_env():
 
 def clean_build_dirs():
     """Clean build directories"""
-    dirs_to_clean = ["build", "dist", "__pycache__", "*.spec"]
+    dirs_to_clean = ["build", "dist", "__pycache__"]
     for dir_name in dirs_to_clean:
         if os.path.exists(dir_name):
             shutil.rmtree(dir_name)
@@ -110,7 +117,17 @@ def clean_build_dirs():
 
 
 def create_spec_file():
-    """Create optimized spec file"""
+    """Create PyInstaller spec file with proper icon handling"""
+    icon_data = []
+    icon_path = ICON_PATH
+
+    if os.path.exists(icon_path):
+        icon_data = [(icon_path, "img")]
+
+        if platform.system() == "Windows" and os.path.exists(ICON_PATH_WINDOWS):
+            icon_data.append((ICON_PATH_WINDOWS, "img"))
+            icon_path = ICON_PATH_WINDOWS
+
     excludes_str = str(EXCLUDES).replace("'", '"')
     hidden_imports_str = str(HIDDEN_IMPORTS).replace("'", '"')
 
@@ -122,7 +139,7 @@ a = Analysis(
     ['{MAIN_SCRIPT}'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas={icon_data},
     hiddenimports={hidden_imports_str},
     hookspath=[],
     hooksconfig={{}},
@@ -154,7 +171,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon.ico' if os.path.exists('icon.ico') else None
+    icon="{icon_path}",
 )
 """
     with open(f"{FILE_NAME}.spec", "w", encoding="utf-8") as f:
@@ -171,90 +188,58 @@ def install_dependencies():
         return
     venv_path, pip_path, python_path = venv_result
 
-    # Upgrade pip, setuptools, and wheel first
-    # subprocess.run([pip_path, "install", "--upgrade", "pip"], check=True)
-    subprocess.run([pip_path, "install", "--upgrade", "setuptools", "wheel"], check=True)
-    subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
+    subprocess.run([pip_path, "install", "pillow"], check=True)
     subprocess.run([pip_path, "install", "-r", "torch.requirements.txt"], check=True)
+    subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
+
+    print("📦 Installing PyInstaller...")
+    subprocess.run([pip_path, "install", "pyinstaller"], check=True)
 
     return venv_path, pip_path, python_path
 
 
-def build_with_upx():
+def build():
     """Build with UPX compression"""
     print("\n" + "=" * 50)
     print(f"Building for {platform.system()}")
     print("=" * 50)
 
-    # Check UPX availability
-    upx_available = shutil.which("upx") is not None
-    if not upx_available:
-        print("⚠️ UPX not found. It is recommended to install UPX for compression:")
-        if platform.system() == "Windows":
-            print("   Download: https://github.com/upx/upx/releases")
-        else:
-            print("   sudo apt install upx || sudo dnf install upx")
-
-    # First install dependencies
     venv_path, pip_path, python_path = install_dependencies()
 
-    # Install PyInstaller in venv
-    print("📦 Installing PyInstaller...")
-    subprocess.run([pip_path, "install", "pyinstaller"], check=True)
-
-    # Create spec file
-    spec_file = create_spec_file()
-
-    # Get PyInstaller path
     if platform.system() == "Windows":
-        pyinstaller_path = os.path.join(venv_path, "Scripts", "pyinstaller")
-    else:
+        ensure_windows_icon()
 
+    if platform.system() == "Windows":
+        pyinstaller_path = os.path.join(venv_path, "Scripts", "pyinstaller.exe")
+    else:
         pyinstaller_path = os.path.join(venv_path, "bin", "pyinstaller")
 
-    # Clean previous dist
     if os.path.exists("dist"):
         shutil.rmtree("dist")
 
-    # Run PyInstaller - IMPORTANT: Use --onefile for Linux
-    if platform.system() == "Windows":
-        cmd = [pyinstaller_path, "--clean", "--noconfirm", spec_file]
-    else:
-        # For Linux, use one-file mode
-        cmd = [pyinstaller_path, "--clean", "--noconfirm", "--onefile", MAIN_SCRIPT, "--name", FILE_NAME]
+    spec_file = create_spec_file()
 
-        # Add hidden imports
-        for imp in HIDDEN_IMPORTS:
-            cmd.extend(["--hidden-import", imp])
+    # if platform.system() == "Windows":
+    #     create_windows_manifest()
 
-        # Add excludes
-        for exc in EXCLUDES:
-            cmd.extend(["--exclude-module", exc])
+    cmd = [pyinstaller_path, "--clean", "--noconfirm", spec_file]
 
     try:
-        # Add more time for large builds
         subprocess.run(cmd, check=True, timeout=1200)
-
-        # Additional UPX compression
-        if upx_available and platform.system() == "Windows":
-            exe_path = f"dist/{FILE_NAME}.exe"
-            if os.path.exists(exe_path):
-                print("🔧 Applying UPX compression...")
-                subprocess.run(["upx", "--best", "--lzma", exe_path], check=True)
 
         print(f"\n✅ Executable built: dist/")
 
-        # Show size
         if platform.system() == "Windows":
             exe_path = f"dist/{FILE_NAME}.exe"
         else:
             exe_path = f"dist/{FILE_NAME}"
             create_launcher_script()
-
-            # Make executable executable
             os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
 
         if os.path.exists(exe_path):
+            if os.path.exists(ICON_PATH):
+                shutil.copytree("img", "dist/img")
+
             size_mb = os.path.getsize(exe_path) / (1024 * 1024)
             print(f"   Size: {size_mb:.2f} MB")
 
@@ -265,6 +250,32 @@ def build_with_upx():
     except Exception as e:
         print(f"\n❌ Build failed: {e}")
         return False
+
+
+# def create_windows_manifest():
+#     """Create Windows manifest file for better icon integration"""
+#     manifest_content = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+# <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+#     <assemblyIdentity
+#         version="1.0.5"
+#         processorArchitecture="*"
+#         name="FJ Chat Voice"
+#         type="win32"
+#     />
+#     <description>FJ Chat Voice Application</description>
+#     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+#         <security>
+#             <requestedPrivileges>
+#                 <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+#             </requestedPrivileges>
+#         </security>
+#     </trustInfo>
+# </assembly>"""
+
+#     manifest_path = "app.manifest"
+#     with open(manifest_path, "w", encoding="utf-8") as f:
+#         f.write(manifest_content)
+#     print("✓ Windows manifest created")
 
 
 def create_launcher_script():
@@ -287,10 +298,28 @@ cd "$SCRIPT_DIR"
     print("✓ Launcher script created: dist/run_chat_voice.sh")
 
 
+def verify_icon():
+    """Verify icon exists and is valid"""
+    if not os.path.exists(ICON_PATH):
+        print(f"⚠️ Icon not found at {ICON_PATH}")
+        return False
+
+    # Check if icon is a valid image file
+    try:
+        from PIL import Image
+
+        img = Image.open(ICON_PATH)
+        print(f"✓ Icon found: {ICON_PATH} ({img.size[0]}x{img.size[1]} pixels)")
+        return True
+    except Exception as e:
+        print(f"⚠️ Icon file may be corrupted: {e}")
+        return False
+
+
 def main():
     """Main function"""
     print("=" * 60)
-    print(f"Optimized build of {APP_NAME} v{VERSION}")
+    print(f"Optimized build of {APP_NAME}")
     print("=" * 60)
 
     # Check if running in correct directory
@@ -298,11 +327,14 @@ def main():
         print(f"❌ {MAIN_SCRIPT} not found in current directory")
         return
 
+    # Verify icon exists
+    verify_icon()
+
     # Clean directories
     clean_build_dirs()
 
     # Build
-    success = build_with_upx()
+    success = build()
 
     print("\n" + "=" * 60)
     print("Build Results")

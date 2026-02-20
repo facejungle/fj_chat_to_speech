@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Optimized build script for FJ Chat Voice
+Optimized build script for FJ Chat to Speech
 Supports: Windows (.exe) and Linux
 """
 
@@ -12,9 +12,16 @@ import platform
 from pathlib import Path
 import stat
 
-APP_NAME = "FJ Chat Voice"
+from main import APP_VERSION, APP_NAME
+
+# APP_NAME = "FJ Chat to Speech"
+# APP_VERSION = "1.0.6"
 MAIN_SCRIPT = "main.py"
-FILE_NAME = "fj_chat_voice"
+FILE_NAME = (
+    f"fj_chat_to_speech_{APP_VERSION}_windows"
+    if platform.system() == "Windows"
+    else f"fj_chat_to_speech_{APP_VERSION}_linux"
+)
 
 ICON_PATH = "img/icon.png"
 ICON_PATH_WINDOWS = "img/icon.ico"
@@ -29,7 +36,17 @@ def ensure_windows_icon():
                 from PIL import Image
 
                 img = Image.open(ICON_PATH)
-                img.save(ICON_PATH_WINDOWS, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+                img.save(
+                    ICON_PATH_WINDOWS,
+                    sizes=[
+                        (16, 16),
+                        (32, 32),
+                        (48, 48),
+                        (64, 64),
+                        (128, 128),
+                        (256, 256),
+                    ],
+                )
                 print(f"✓ Created Windows icon: {ICON_PATH_WINDOWS}")
                 return ICON_PATH_WINDOWS
             except ImportError:
@@ -165,7 +182,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=platform.system() == "Windows",
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -281,7 +298,7 @@ def build():
 def create_launcher_script():
     """Create launcher script for Linux"""
     launcher = f"""#!/bin/bash
-# FJ Chat Voice Launcher
+# FJ Chat to Speech Launcher
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 

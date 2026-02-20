@@ -22,18 +22,18 @@ Implemented features:
 
 ## Text-to-speech for YouTube streams
 
-- Generating [Google API Keys](https://github.com/facejungle/fj_chat_voice/wiki/Google-API-Keys)
+- Generating [Google API Keys](https://github.com/facejungle/fj_chat_to_speech/wiki/Google-API-Keys)
 - The Google API has a limit on the number of requests per day, typically quota equal 10,000. View your quota: [Google Console: Quotas](https://console.cloud.google.com/iam-admin/quotas)
 
 ## Text-to-speech for Twitch streams
 
-- Generating [Twitch CLIENT ID](https://github.com/facejungle/fj_chat_voice/wiki/Twitch-CLIENT-ID)
+- Generating [Twitch CLIENT ID](https://github.com/facejungle/fj_chat_to_speech/wiki/Twitch-CLIENT-ID)
 
 ## Launch from source code
 
 ```
-git clone https://github.com/facejungle/fj_chat_voice.git
-cd fj_chat_voice
+git clone https://github.com/facejungle/fj_chat_to_speech.git
+cd fj_chat_to_speech
 
 pip install -r torch.requirements.txt
 pip install -r requirements.txt

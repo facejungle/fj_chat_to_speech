@@ -163,6 +163,12 @@ class YouTubeChatListener:
                     video_id = query.get("v", [None])[0]
                 elif "embed" in parsed.path:
                     video_id = parsed.path.split("/")[-1]
+                elif "studio.youtube.com" in parsed.netloc and "/video/" in parsed.path:
+                    path_parts = [part for part in parsed.path.split("/") if part]
+                    if "video" in path_parts:
+                        video_index = path_parts.index("video")
+                        if video_index + 1 < len(path_parts):
+                            video_id = path_parts[video_index + 1]
 
         except Exception as e:
             self.on_error(f"{_(self.lang, "not_determine_video_id")}. {str(e)}")

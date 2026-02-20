@@ -1,8 +1,7 @@
 import locale
 
-
 TRANSLATIONS = {
-    "English": {
+    "en": {
         "app_title": "FJ Chat Voice - Silero TTS",
         "tab_chat": "Chat",
         "tab_settings": "Settings",
@@ -33,8 +32,6 @@ TRANSLATIONS = {
         "Queue depth": "Queue depth:",
         "Queue note": "(number of messages waiting to be spoken)",
         "Main filters": "Main filters",
-        "Min message length": "Min message length",
-        "Max message length": "Max message length",
         "Delay between messages": "Delay between messages (sec):",
         "Remove emojis": "Remove emojis",
         "Remove links": "Remove links",
@@ -63,14 +60,21 @@ TRANSLATIONS = {
         "error_fetch_messages": "Error fetching messages",
         "Audio queue error": "Audio queue error",
         "Audio playback error": "Audio playback error",
-        "Error speaking message": "Error speaking message",
         "point": "point",
         "api_keys_help_text": "Creating and viewing API keys is available at the link",
         "not_determine_video_id": "Could not determine video ID",
         "not_determine_chat_id": "Could not determine chat ID",
         "queue_depth_desc": "Maximum number of messages in the voiceover queue",
+        "chat_listener_stopped": "The chat listener has stopped",
+        "chat_disconnected": "Disconnected from chat",
+        "chat_connected": "Connected to chat",
+        "many_errors": "Several errors in a row",
+        "verification_uri": "If the browser does not open automatically, you need to follow this link",
+        "expires_in": "Code validity period in minutes",
+        "client_id_help_text": "You can get a CLIENT ID by creating an application using the link",
+        "continue_authorize_browser": "Need to continue authorization in the browser",
     },
-    "Russian": {
+    "ru": {
         "app_title": "FJ Chat Voice - Silero TTS",
         "tab_chat": "Чат",
         "tab_settings": "Настройки",
@@ -116,8 +120,6 @@ TRANSLATIONS = {
         "System": "Система",
         "Error saving settings": "Ошибка сохранения настроек",
         "api_key_saved": "API Ключ сохранён",
-        "disconnected_yt": "Отключен от YouTube чата",
-        "connected_yt": "Подключение к YouTube API успешно",
         "connection_success": "Успешное подключение",
         "connection_failed": "Не удалось подключиться",
         "note_tts_not_loaded": "Модель Silero TTS не загружена. Продолжить подключение к чату?",
@@ -133,8 +135,7 @@ TRANSLATIONS = {
         "error_fetch_messages": "Ошибка при получении сообщений",
         "Audio queue error": "Ошибка очереди аудио",
         "Audio playback error": "Ошибка воспроизведения аудио",
-        "Error speaking message": "Ошибка воспроизведения сообщения",
-        "Error convert message": "Ошибка конвертирования сообщения в аудио",
+        "Error convert text to speech": "Ошибка конвертирования текста в речь",
         "point": "точка",
         "English": "Английский",
         "Russian": "Русский",
@@ -166,6 +167,31 @@ TRANSLATIONS = {
         "stop words": "стоп-слов/а",
         "Settings saved": "Настройки сохранены",
         "queue_depth_desc": "Максимальное количество сообщений в очереди на озвучку",
+        "chat_listener_stopped": "Слушатель чата остановлен",
+        "chat_disconnected": "Отключен от чата",
+        "chat_connected": "Подключен к чату",
+        "many_errors": "Несколько ошибок подряд",
+        "Failed to get a code": "Не удалось получить код",
+        "Success authorized": "Успешная авторизация",
+        "verification_uri": "Если браузер не открылся автоматически, вам необходимо перейти по этой ссылке",
+        "expires_in": "Срок действия кода в минутах",
+        "Twitch account": "Twitch аккаунт",
+        "client_id_help_text": "Получить CLIENT ID можно создав приложение по ссылке",
+        "continue_authorize_browser": "Необходимо продолжить авторизацию в браузере",
+        "Error send a command": "Ошибка отправки команды",
+        "Incorrect nickname format": "Неправильный формат ника",
+        "The nickname is already in use": "Ник уже используется",
+        "Connection lost": "Соединение потеряно",
+        "Authorization timeout. Please start again.": "Время ожидания авторизации истекло. Начните заново.",
+        "Error": "Ошибка",
+        "Unexpected error": "Неожиданная ошибка",
+        "Authorization wait time expired": "Истекло время ожидания авторизации",
+        "Network timeout. Check your connection.": "Таймаут сети. Проверьте подключение.",
+        "Connection error": "Ошибка подключения",
+        "Failed to get nickname": "Ошибка получения никнейма",
+        "Failed to refresh token": "Не удалось обновить Twitch токен",
+        "missing": "отсутствует",
+        "Translate messages": "Перевод сообщений",
     },
 }
 
@@ -173,11 +199,13 @@ GUI_LANGUAGES = tuple(TRANSLATIONS.keys())
 SYS_LOCALE = locale.getlocale()
 
 DEFAULT_LANGUAGE = (
-    "Russian"
-    if SYS_LOCALE and SYS_LOCALE[0] and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
-    else "English"
+    "ru"
+    if SYS_LOCALE
+    and SYS_LOCALE[0]
+    and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
+    else "en"
 )
-LANG_CODES = {"English": "en", "Russian": "ru"}
+LANG_CODES = {"en": "English", "ru": "Russian"}
 
 
 def _(lang, key):

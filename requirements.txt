@@ -1,8 +1,10 @@
 googletrans
-google-api-python-client
-google-auth-httplib2
-google-auth-oauthlib
-google-auth
+# google-api-python-client
+# google-auth-httplib2
+# google-auth-oauthlib
+# google-auth
+pytchat
+
 # Speech deps
 sounddevice==0.5.5
 num2words==0.5.14

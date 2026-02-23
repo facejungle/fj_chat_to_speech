@@ -1,4 +1,4 @@
-﻿import os
+import os
 from random import randint
 import sys
 from collections import defaultdict, deque
@@ -89,6 +89,29 @@ twitch_default_credentials = TwitchCredentialsTD(
 )
 
 
+class _NullStream:
+    """Fallback stream used when GUI builds have no stdio handles."""
+
+    encoding = "utf-8"
+
+    def write(self, _text):
+        return 0
+
+    def flush(self):
+        return None
+
+    def isatty(self):
+        return False
+
+
+def ensure_stdio_streams():
+    """Torch hub download path expects writable stderr/stdout streams."""
+    if sys.stdout is None:
+        sys.stdout = _NullStream()
+    if sys.stderr is None:
+        sys.stderr = _NullStream()
+
+
 def resource_path(relative_path: str) -> str:
     """Resolve resource paths for source and PyInstaller onefile builds."""
     base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
@@ -97,6 +120,8 @@ def resource_path(relative_path: str) -> str:
 
 def configure_torch_hub_cache():
     """Use a stable user cache path only for frozen builds."""
+    ensure_stdio_streams()
+
     if not getattr(sys, "frozen", False):
         return
 
@@ -174,7 +199,7 @@ class MainWindow(QMainWindow):
 
         self.language = DEFAULT_LANGUAGE
         self.voice_language = DEFAULT_LANGUAGE
-        self.voice = _(self.language, "random")
+        self.voice = "random"
         self.volume = 100
         self.speech_rate = 1.00
         self.speech_delay = 1.5
@@ -237,8 +262,8 @@ class MainWindow(QMainWindow):
         self.voice_menu.clear()
         for voice_lang in VOICES.keys():
             voice_lang_menu = self.voice_menu.addMenu(voice_lang)
-            voices = [_(self.language, "random")] + list(VOICES[voice_lang])
 
+            voices = ["random"] + list(VOICES[voice_lang])
             for voice in voices:
                 voice_action = QAction(voice, self)
                 voice_action.setCheckable(True)
@@ -1456,6 +1481,7 @@ class MainWindow(QMainWindow):
                             speaker=MODELS[self.voice_language],
                             trust_repo=True,
                             force_reload=False,
+                            verbose=False,
                         )
                     else:
                         self.model, txt = hub.load(
@@ -1466,6 +1492,7 @@ class MainWindow(QMainWindow):
                             speaker=MODELS[self.voice_language],
                             trust_repo=True,
                             force_reload=False,
+                            verbose=False,
                         )
                 else:
                     self.model, txt = hub.load(
@@ -1475,6 +1502,7 @@ class MainWindow(QMainWindow):
                         speaker=MODELS[self.voice_language],
                         trust_repo=True,
                         force_reload=False,
+                            verbose=False,
                     )
 
             self.add_sys_message(
@@ -1652,7 +1680,7 @@ class MainWindow(QMainWindow):
             if self.model is not None:
                 with self.model_lock:
                     with no_grad():
-                        if self.voice == _(self.language, "random"):
+                        if self.voice == "random":
                             num = randint(0, len(VOICES[self.voice_language]) - 1)
                             voice = VOICES[self.voice_language][num]
                         else:
@@ -1815,4 +1843,5 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 

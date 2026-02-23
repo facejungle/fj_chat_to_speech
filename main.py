@@ -530,10 +530,11 @@ class MainWindow(QMainWindow):
         self.clr_queue_button.setText((_(self.language, "Clear queue")))
 
     def voice_changed(self, lang, voice):
-        if self.voice_language != lang:
-            threading.Thread(target=self.init_silero, daemon=True).start()
-        self.voice_language = lang
         self.voice = voice
+        if self.voice_language != lang:
+            self.voice_language = lang
+            threading.Thread(target=self.init_silero, daemon=True).start()
+            
         self.save_settings()
         self.setup_voice_menu()
         self.voice_label.setText(self.status_voice_text())
@@ -1306,7 +1307,7 @@ class MainWindow(QMainWindow):
                 self.max_msg_length = settings.get(
                     "max_msg_length", self.max_msg_length
                 )
-                self.yt_credentials = settings.get("yt_credentials", None)
+                self.yt_credentials = settings.get("yt_credentials", self.yt_credentials)
                 self.twitch_credentials = settings.get(
                     "twitch_credentials", twitch_default_credentials
                 )

@@ -30,7 +30,9 @@ def _extract_channel_id(video_id: str) -> str:
         f"https://m.youtube.com/watch?v={video_id}",
     )
 
-    with httpx.Client(http2=True, follow_redirects=True, timeout=20.0, headers=headers) as client:
+    with httpx.Client(
+        http2=True, follow_redirects=True, timeout=20.0, headers=headers
+    ) as client:
         for url in urls:
             text = client.get(url).text
             for pattern in _CHANNEL_PATTERNS:
@@ -46,8 +48,6 @@ def _extract_channel_id(video_id: str) -> str:
 # Patch pytchat channel-id resolvers to avoid brittle built-in regex fallback.
 util.get_channelid = lambda client, video_id: _extract_channel_id(video_id)
 util.get_channelid_2nd = lambda client, video_id: _extract_channel_id(video_id)
-
-
 
 
 class YouTubeChatParser:
@@ -75,7 +75,7 @@ class YouTubeChatParser:
     def _connect(self):
         delay = 1
         errors = 0
-        
+
         try:
             video_id = self._parse_video_id(self.url)
             chat = pytchat.create(video_id=video_id, interruptable=False)
@@ -83,43 +83,51 @@ class YouTubeChatParser:
             if chat.is_alive():
                 self.is_connected = True
                 self.on_connect()
-                
-            while chat.is_alive():
+
+            while chat.is_alive() and self.is_connected:
                 try:
                     for message in chat.get().sync_items():
                         if message.type == "textMessage":
                             author_details = message.author
-                            is_member = author_details.isChatSponsor or author_details.isChatOwner or author_details.isChatModerator
-                            self.on_message(message.id, author_details.name, message.message, is_member)
+                            is_member = (
+                                author_details.isChatSponsor
+                                or author_details.isChatOwner
+                                or author_details.isChatModerator
+                            )
+                            self.on_message(
+                                message.id,
+                                author_details.name,
+                                message.message,
+                                is_member,
+                            )
                         errors = 0
-                        
+
                 except Exception as e:
                     self.on_error(f"{_(self.lang, "error_fetch_messages")}. {str(e)}")
                     errors += 1
-                    
+
                 if errors >= 5:
                     self.disconnect()
                     return
-                
+
                 sleep(delay * max(1, errors))
             else:
                 self.is_connected = False
-                    
+
         except Exception as e:
             self.on_error(f"{_(self.lang, "connection_failed")}. {str(e)}")
         finally:
             self.disconnect()
-            
-        
+
     def disconnect(self):
         if self.is_connected:
             self.is_connected = False
             self.on_disconnect()
-            
+
     def run(self):
         th = Thread(target=self._connect, daemon=True)
         th.start()
-            
+
     def _parse_video_id(self, url):
         try:
             video_id = url
@@ -147,5 +155,3 @@ class YouTubeChatParser:
             return
 
         return video_id
-
-

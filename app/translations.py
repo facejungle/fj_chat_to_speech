@@ -192,6 +192,8 @@ TRANSLATIONS = {
         "Failed to refresh token": "Не удалось обновить Twitch токен",
         "missing": "отсутствует",
         "Translate messages": "Перевод сообщений",
+        "Edit": "Редактировать",
+        "Save": "Сохранить",
     },
 }
 

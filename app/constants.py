@@ -4,7 +4,7 @@ DEFAULT_BUFFER_SIZE = 5
 VOICES = {
     "ru": ("xenia", "aidar", "baya", "kseniya", "eugene"),
     "en": (
-        "random",
+        # "random",
         "en_0",
         "en_1",
         "en_2",
@@ -34,4 +34,4 @@ MODELS = {
     "en": "v3_en",
 }
 
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"

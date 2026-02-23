@@ -1,4 +1,5 @@
 ﻿import os
+from random import randint
 import sys
 from collections import defaultdict, deque
 import asyncio
@@ -43,6 +44,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, QFile, QIODevice
 from PyQt6.QtGui import QFont, QAction, QPalette, QTextCursor, QIcon
+from PyQt6.QtGui import QShortcut, QKeySequence
 from scipy.signal import resample
 import numpy as np
 from googletrans import Translator
@@ -50,7 +52,6 @@ from googletrans import Translator
 from app.translations import DEFAULT_LANGUAGE, TRANSLATIONS, _
 from app.twitch.auth_worker import AuthWorker
 from app.twitch.chat_listener import TwitchChatListener
-from app.youtube.chat_listener import YouTubeChatListener
 from app.constants import (
     APP_VERSION,
     APP_NAME,
@@ -59,6 +60,7 @@ from app.constants import (
     VOICES,
     MODELS,
 )
+from app.youtube.chat_parser import YouTubeChatParser
 
 size_policy_fixed = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 window_flag_fixed = (
@@ -158,6 +160,7 @@ def _proc_translate_external(q, txt, dst):
 
 
 class MainWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
         icon = QIcon(resource_path("img/icon.png"))
@@ -171,7 +174,7 @@ class MainWindow(QMainWindow):
 
         self.language = DEFAULT_LANGUAGE
         self.voice_language = DEFAULT_LANGUAGE
-        self.voice = VOICES[self.voice_language][0]
+        self.voice = _(self.language, "random")
         self.volume = 100
         self.speech_rate = 1.00
         self.speech_delay = 1.5
@@ -185,9 +188,11 @@ class MainWindow(QMainWindow):
         self.remove_links = True
         self.filter_repeats = True
         self.read_author_names = False
+        self.read_platform_names = False
         self.subscribers_only = False
         self.auto_translate = False
         self.stop_words = []
+        self.chat_only_mode = False
 
         # Connections
         self.youtube = None
@@ -232,10 +237,12 @@ class MainWindow(QMainWindow):
         self.voice_menu.clear()
         for voice_lang in VOICES.keys():
             voice_lang_menu = self.voice_menu.addMenu(voice_lang)
-            for voice in VOICES[voice_lang]:
+            voices = [_(self.language, "random")] + list(VOICES[voice_lang])
+
+            for voice in voices:
                 voice_action = QAction(voice, self)
                 voice_action.setCheckable(True)
-                voice_action.setChecked(voice == self.voice)
+                voice_action.setChecked(voice == self.voice and voice_lang == self.voice_language)
                 voice_action.triggered.connect(
                     lambda checked, l=voice_lang, v=voice: self.voice_changed(l, v)
                 )
@@ -310,6 +317,14 @@ class MainWindow(QMainWindow):
         read_authors_action.triggered.connect(self.toggle_read_author_names)
         msg_settings_menu.addAction(read_authors_action)
 
+        read_platform_action = QAction(
+            _(self.language, "Read platform name"), msg_settings_menu
+        )
+        read_platform_action.setCheckable(True)
+        read_platform_action.setChecked(self.read_platform_names)
+        read_platform_action.triggered.connect(self.toggle_read_platform_names)
+        msg_settings_menu.addAction(read_platform_action)
+
         subscribers_only_action = QAction(
             _(self.language, "Subscribers only"), msg_settings_menu
         )
@@ -326,9 +341,18 @@ class MainWindow(QMainWindow):
         auto_translate_action.triggered.connect(self.toggle_auto_translate)
         msg_settings_menu.addAction(auto_translate_action)
 
+        # view_menu = menu_bar.addMenu("View")
+        # self.chat_only_action = QAction("Chat only mode", self)
+        # self.chat_only_action.setCheckable(True)
+        # self.chat_only_action.setChecked(self.chat_only_mode)
+        # self.chat_only_action.triggered.connect(self.toggle_chat_only_mode)
+        # view_menu.addAction(self.chat_only_action)
+
     def setup_connections_grid(self):
         connections_grid = QGridLayout()
-        self.root_layout.addLayout(connections_grid)
+        self.connections_widget = QWidget()
+        self.connections_widget.setLayout(connections_grid)
+        self.root_layout.addWidget(self.connections_widget)
 
         yt_layout = QHBoxLayout()
         yt_layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
@@ -343,9 +367,9 @@ class MainWindow(QMainWindow):
         self.connect_yt_button = QPushButton(_(self.language, "Connect"))
         self.connect_yt_button.clicked.connect(self.on_click_yt_connect)
         yt_layout.addWidget(self.connect_yt_button)
-        self.configure_yt_button = QPushButton(_(self.language, "Configure"))
-        self.configure_yt_button.clicked.connect(self.on_configure_yt)
-        yt_layout.addWidget(self.configure_yt_button)
+        # self.configure_yt_button = QPushButton(_(self.language, "Configure"))
+        # self.configure_yt_button.clicked.connect(self.on_configure_yt)
+        # yt_layout.addWidget(self.configure_yt_button)
         connections_grid.addLayout(yt_layout, 0, 0)
 
         twitch_layout = QHBoxLayout()
@@ -413,7 +437,9 @@ class MainWindow(QMainWindow):
         self.clear_log_button.clicked.connect(self.clear_log)
         chat_header_layout.addWidget(self.clear_log_button)
 
-        self.root_layout.addLayout(chat_header_layout)
+        self.chat_header_widget = QWidget()
+        self.chat_header_widget.setLayout(chat_header_layout)
+        self.root_layout.addWidget(self.chat_header_widget)
 
         # Chat log (rich text for messenger-like messages)
         self.chat_text = QTextEdit()
@@ -445,12 +471,12 @@ class MainWindow(QMainWindow):
         self.vol_label.setContentsMargins(PADDING, 0, 0, 5)
         self.statusBar().addWidget(self.vol_label)
 
-        vol_slider = QSlider(Qt.Orientation.Horizontal)
-        vol_slider.setMinimum(0)
-        vol_slider.setMaximum(200)
-        vol_slider.setValue(self.volume)
-        vol_slider.valueChanged.connect(self.on_change_volume)
-        self.statusBar().addWidget(vol_slider)
+        self.vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vol_slider.setMinimum(0)
+        self.vol_slider.setMaximum(200)
+        self.vol_slider.setValue(self.volume)
+        self.vol_slider.valueChanged.connect(self.on_change_volume)
+        self.statusBar().addWidget(self.vol_slider)
 
         self.vol_label_value = QLabel(f"{self.volume}%")
         self.vol_label_value.setContentsMargins(0, 0, PADDING, 5)
@@ -461,14 +487,14 @@ class MainWindow(QMainWindow):
         self.speech_rate_label.setContentsMargins(0, 0, 0, 5)
         self.statusBar().addWidget(self.speech_rate_label)
 
-        speech_rate_slider = QSlider(Qt.Orientation.Horizontal)
-        speech_rate_slider.setMinimum(50)
-        speech_rate_slider.setMaximum(150)
-        speech_rate_slider.setValue(
+        self.speech_rate_slider = QSlider(Qt.Orientation.Horizontal)
+        self.speech_rate_slider.setMinimum(50)
+        self.speech_rate_slider.setMaximum(150)
+        self.speech_rate_slider.setValue(
             int(self.speech_rate * 100)
         )  # Convert to 50-150 range
-        speech_rate_slider.valueChanged.connect(self.speech_rate_changed)
-        self.statusBar().addWidget(speech_rate_slider)
+        self.speech_rate_slider.valueChanged.connect(self.speech_rate_changed)
+        self.statusBar().addWidget(self.speech_rate_slider)
 
         self.speech_rate_label_value = QLabel(f"{self.speech_rate:.2f}x")
         self.speech_rate_label_value.setContentsMargins(0, 0, 0, 5)
@@ -479,9 +505,58 @@ class MainWindow(QMainWindow):
         self.setup_status_bar()
         self.setup_connections_grid()
         self.setup_central_widget()
+        self.exit_chat_only_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self.exit_chat_only_shortcut.activated.connect(self.exit_chat_only_mode)
+        self.toggle_chat_only_shortcut = QShortcut(QKeySequence("F11"), self)
+        self.toggle_chat_only_shortcut.activated.connect(
+            lambda: self.toggle_chat_only_mode(not self.chat_only_mode)
+        )
+        self.pause_play_shortcut = QShortcut(QKeySequence("Space"), self)
+        self.pause_play_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.pause_play_shortcut.activated.connect(self.on_pause_clicked)
+        self.volume_up_shortcut = QShortcut(QKeySequence("Up"), self)
+        self.volume_up_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.volume_up_shortcut.activated.connect(lambda: self.change_volume_by_step(5))
+        self.volume_down_shortcut = QShortcut(QKeySequence("Down"), self)
+        self.volume_down_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.volume_down_shortcut.activated.connect(
+            lambda: self.change_volume_by_step(-5)
+        )
+        self.speech_rate_up_shortcut = QShortcut(QKeySequence("Right"), self)
+        self.speech_rate_up_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.speech_rate_up_shortcut.activated.connect(
+            lambda: self.change_speech_rate_by_step(5)
+        )
+        self.speech_rate_down_shortcut = QShortcut(QKeySequence("Left"), self)
+        self.speech_rate_down_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self.speech_rate_down_shortcut.activated.connect(
+            lambda: self.change_speech_rate_by_step(-5)
+        )
         self.font_size_changed(2)
+        self.apply_chat_only_mode()
 
     # === UI event handlers ===
+
+    def change_volume_by_step(self, delta):
+        self.vol_slider.setValue(
+            max(
+                self.vol_slider.minimum(),
+                min(self.vol_slider.maximum(), self.vol_slider.value() + delta),
+            )
+        )
+
+    def change_speech_rate_by_step(self, delta):
+        self.speech_rate_slider.setValue(
+            max(
+                self.speech_rate_slider.minimum(),
+                min(
+                    self.speech_rate_slider.maximum(),
+                    self.speech_rate_slider.value() + delta,
+                ),
+            )
+        )
 
     def on_pause_clicked(self):
         self.is_paused = not self.is_paused
@@ -505,6 +580,7 @@ class MainWindow(QMainWindow):
         self.language = lang
         self.save_settings()
         self.setup_menu_bar()
+        self.apply_chat_only_mode()
         self.on_change_stats()
         self.speech_rate_label.setText(_(self.language, "Speech rate"))
         self.vol_label.setText(_(self.language, "Volume"))
@@ -513,7 +589,7 @@ class MainWindow(QMainWindow):
         self.connect_yt_button.setText(
             _(self.language, "Connected" if self.yt_is_connected else "Connect")
         )
-        self.configure_yt_button.setText(_(self.language, "Configure"))
+        # self.configure_yt_button.setText(_(self.language, "Configure"))
         self.connect_twitch_button.setText(
             _(self.language, "Connected" if self.twitch_is_connected else "Connect")
         )
@@ -534,7 +610,7 @@ class MainWindow(QMainWindow):
         if self.voice_language != lang:
             self.voice_language = lang
             threading.Thread(target=self.init_silero, daemon=True).start()
-            
+
         self.save_settings()
         self.setup_voice_menu()
         self.voice_label.setText(self.status_voice_text())
@@ -697,73 +773,72 @@ class MainWindow(QMainWindow):
         self.twitch_client_id_button.setText(_(self.language, "Save"))
 
     def on_click_connect_twitch(self):
-        if self.twitch:
-            self.connect_twitch_button.setEnabled(False)
+        self.connect_twitch_button.setEnabled(False)
+        try:
+            if self.twitch:
 
-            def _stop_twitch_async():
-                try:
+                def _stop_twitch_async():
                     self.twitch.stop()
-                    self.connect_twitch_button.setEnabled(True)
                     self.twitch = None
-                finally:
-                    QTimer.singleShot(
-                        0, lambda: self.connect_twitch_button.setEnabled(True)
+
+                threading.Thread(target=_stop_twitch_async, daemon=True).start()
+            else:
+                video_id = self.twitch_input.text()
+                if not video_id:
+                    QMessageBox.warning(
+                        self,
+                        "URL / ID",
+                        _(self.language, "Please enter video ID or URL"),
+                    )
+                    return
+
+                if (
+                    self.twitch_credentials["client_id"] is None
+                    or self.twitch_credentials["access"] is None
+                ):
+                    self.on_configure_twitch()
+                    return
+
+                def on_expiries_access():
+                    access, refresh = AuthWorker.refresh_access_token(
+                        self.twitch_credentials["client_id"],
+                        self.twitch_credentials["refresh"],
+                        self.language,
+                    )
+                    self.twitch_credentials["access"] = access
+                    self.twitch_credentials["refresh"] = refresh
+                    return access
+
+                def on_msg(msg_id, author, msg, is_member):
+                    if self.subscribers_only and not is_member:
+                        return
+                    self.process_chat_message(
+                        msg_id=msg_id, platform="Twitch", author=author, message=msg
                     )
 
-            threading.Thread(target=_stop_twitch_async, daemon=True).start()
-        else:
-            video_id = self.twitch_input.text()
-            if not video_id:
-                QMessageBox.warning(
-                    self,
-                    "URL / ID",
-                    _(self.language, "Please enter video ID or URL"),
+                def on_error(err):
+                    self.add_sys_message(author="Twitch", text=err, status="error")
+
+                self.twitch = TwitchChatListener(
+                    client_id=self.twitch_credentials["client_id"],
+                    token=self.twitch_credentials["access"],
+                    nickname=self.twitch_credentials["nickname"],
+                    channel=video_id,
+                    on_connect=self.on_connect_twitch,
+                    on_disconnect=self.on_disconnect_twitch,
+                    on_error=on_error,
+                    on_message=on_msg,
+                    on_expiries_access=on_expiries_access,
+                    lang=self.language,
                 )
-                return
-
-            if (
-                self.twitch_credentials["client_id"] is None
-                or self.twitch_credentials["access"] is None
-            ):
-                self.on_configure_twitch()
-                return
-
-            def on_expiries_access():
-                access, refresh = AuthWorker.refresh_access_token(
-                    self.twitch_credentials["client_id"],
-                    self.twitch_credentials["refresh"],
-                    self.language,
-                )
-                self.twitch_credentials["access"] = access
-                self.twitch_credentials["refresh"] = refresh
-                return access
-
-            def on_msg(msg_id, author, msg, is_member):
-                if self.subscribers_only and not is_member:
-                    return
-                self.process_chat_message(
-                    msg_id=msg_id, platform="Twitch", author=author, message=msg
-                )
-
-            def on_error(err):
-                self.add_sys_message(author="Twitch", text=err, status="error")
-
-            self.twitch = TwitchChatListener(
-                client_id=self.twitch_credentials["client_id"],
-                token=self.twitch_credentials["access"],
-                nickname=self.twitch_credentials["nickname"],
-                channel=video_id,
-                on_connect=self.on_connect_twitch,
-                on_disconnect=self.on_disconnect_twitch,
-                on_error=on_error,
-                on_message=on_msg,
-                on_expiries_access=on_expiries_access,
-                lang=self.language,
-            )
-            threading.Thread(target=self.twitch.run).start()
+                threading.Thread(target=self.twitch.run).start()
+        finally:
+            self.connect_twitch_button.setEnabled(True)
 
     def on_disconnect_twitch(self):
         self.twitch_is_connected = False
+        self.twitch_input.setReadOnly(False)
+
         self.connect_twitch_button.setText(_(self.language, "Connect"))
         self.connect_twitch_button.setPalette(self.style().standardPalette())
         self.add_sys_message(
@@ -774,6 +849,8 @@ class MainWindow(QMainWindow):
 
     def on_connect_twitch(self):
         self.twitch_is_connected = True
+        self.twitch_input.setReadOnly(True)
+
         self.connect_twitch_button.setText(_(self.language, "Connected"))
         palette = self.connect_twitch_button.palette()
         palette.setColor(QPalette.ColorRole.Button, Qt.GlobalColor.darkGreen)
@@ -826,56 +903,61 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def on_click_yt_connect(self):
-        if self.youtube:
-            self.youtube.disconnect()
-            self.youtube = None
-        else:
-            video_id = self.yt_video_input.text()
-            if not video_id:
-                QMessageBox.warning(
-                    self,
-                    "URL / ID",
-                    _(self.language, "Please enter video ID or URL"),
-                )
-                return
-
-            if self.yt_credentials is None:
-                self.on_configure_yt()
-                return
-
-            if not self.model:
-                res = QMessageBox.question(
-                    self,
-                    _(self.language, "Silero not loaded"),
-                    _(self.language, "note_tts_not_loaded"),
-                )
-                if res != QMessageBox.StandardButton.Yes:
+        self.connect_yt_button.setEnabled(False)
+        try:
+            if self.youtube:
+                self.youtube.disconnect()
+                self.youtube = None
+            else:
+                video_id = self.yt_video_input.text()
+                if not video_id:
+                    QMessageBox.warning(
+                        self,
+                        "URL / ID",
+                        _(self.language, "Please enter video ID or URL"),
+                    )
                     return
 
-            def on_msg(msg_id, author, msg, is_member):
-                if self.subscribers_only and not is_member:
-                    return
-                self.process_chat_message(
-                    msg_id=msg_id, platform="YouTube", author=author, message=msg
+                # if self.yt_credentials is None:
+                #     self.on_configure_yt()
+                #     return
+
+                if not self.model:
+                    res = QMessageBox.question(
+                        self,
+                        _(self.language, "Silero not loaded"),
+                        _(self.language, "note_tts_not_loaded"),
+                    )
+                    if res != QMessageBox.StandardButton.Yes:
+                        return
+
+                def on_msg(msg_id, author, msg, is_member):
+                    if self.subscribers_only and not is_member:
+                        return
+                    self.process_chat_message(
+                        msg_id=msg_id, platform="YouTube", author=author, message=msg
+                    )
+
+                def on_error(err):
+                    self.add_sys_message(author="YouTube", text=err, status="error")
+
+                self.youtube = YouTubeChatParser(
+                    url=video_id,
+                    on_connect=self.on_connect_yt,
+                    on_disconnect=self.on_disconnect_yt,
+                    on_message=on_msg,
+                    on_error=on_error,
+                    lang=self.language,
                 )
 
-            def on_error(err):
-                self.add_sys_message(author="YouTube", text=err, status="error")
-
-            self.youtube = YouTubeChatListener(
-                api_key=self.yt_credentials,
-                url=video_id,
-                on_connect=self.on_connect_yt,
-                on_disconnect=self.on_disconnect_yt,
-                on_message=on_msg,
-                on_error=on_error,
-                lang=self.language,
-            )
-
-            threading.Thread(target=self.youtube.run).start()
+                self.youtube.run()
+        finally:
+            self.connect_yt_button.setEnabled(True)
 
     def on_connect_yt(self):
         self.yt_is_connected = True
+        self.yt_video_input.setReadOnly(True)
+
         self.add_sys_message(
             author="YouTube", text=_(self.language, "chat_connected"), status="success"
         )
@@ -887,6 +969,8 @@ class MainWindow(QMainWindow):
 
     def on_disconnect_yt(self):
         self.yt_is_connected = False
+        self.yt_video_input.setReadOnly(False)
+
         self.add_sys_message(
             author="YouTube",
             text=_(self.language, "chat_disconnected"),
@@ -1086,11 +1170,38 @@ class MainWindow(QMainWindow):
     def toggle_read_author_names(self, checked):
         self.read_author_names = checked
 
+    def toggle_read_platform_names(self, checked):
+        self.read_platform_names = checked
+
     def toggle_subscribers_only(self, checked):
         self.subscribers_only = checked
 
     def toggle_auto_translate(self, checked):
         self.auto_translate = checked
+
+    def toggle_chat_only_mode(self, checked):
+        self.chat_only_mode = checked
+        self.apply_chat_only_mode()
+
+    def exit_chat_only_mode(self):
+        if self.chat_only_mode:
+            self.toggle_chat_only_mode(False)
+
+    def apply_chat_only_mode(self):
+        chat_only = self.chat_only_mode
+        menu_bar = self.menuBar()
+        if menu_bar is not None:
+            menu_bar.setVisible(not chat_only)
+        self.statusBar().setVisible(not chat_only)
+        if hasattr(self, "connections_widget"):
+            self.connections_widget.setVisible(not chat_only)
+        if hasattr(self, "chat_header_widget"):
+            self.chat_header_widget.setVisible(not chat_only)
+        if (
+            hasattr(self, "chat_only_action")
+            and self.chat_only_action.isChecked() != chat_only
+        ):
+            self.chat_only_action.setChecked(chat_only)
 
     def toggle_auto_scroll(self, checked):
         self.auto_scroll = checked
@@ -1257,6 +1368,7 @@ class MainWindow(QMainWindow):
             "remove_links": self.remove_links,
             "filter_repeats": self.filter_repeats,
             "read_author_names": self.read_author_names,
+            "read_platform_names": self.read_platform_names,
             "subscribers_only": self.subscribers_only,
             "auto_translate": self.auto_translate,
             "min_msg_length": self.min_msg_length,
@@ -1292,6 +1404,9 @@ class MainWindow(QMainWindow):
                 self.read_author_names = settings.get(
                     "read_author_names", self.read_author_names
                 )
+                self.read_platform_names = settings.get(
+                    "read_platform_names", self.read_platform_names
+                )
                 self.subscribers_only = settings.get(
                     "subscribers_only", self.subscribers_only
                 )
@@ -1307,14 +1422,16 @@ class MainWindow(QMainWindow):
                 self.max_msg_length = settings.get(
                     "max_msg_length", self.max_msg_length
                 )
-                self.yt_credentials = settings.get("yt_credentials", self.yt_credentials)
+                self.yt_credentials = settings.get(
+                    "yt_credentials", self.yt_credentials
+                )
                 self.twitch_credentials = settings.get(
                     "twitch_credentials", twitch_default_credentials
                 )
                 if not isinstance(self.twitch_credentials, dict):
                     self.twitch_credentials = twitch_default_credentials
 
-                self.stop_words = tuple(settings.get("stop_words", []))
+                self.stop_words = tuple(settings.get("stop_words", self.stop_words))
         except FileNotFoundError:
             pass  # No settings file, use defaults
 
@@ -1426,7 +1543,7 @@ class MainWindow(QMainWindow):
 
     def is_spam(self, platform, author, message):
         """Check for spam"""
-        if not self.filter_repeats:
+        if self.filter_repeats is False:
             return False
 
         message_hash = self.get_msg_hash(platform, author, message)
@@ -1507,7 +1624,10 @@ class MainWindow(QMainWindow):
         cleaned_text = self.convert_numbers_to_words(cleaned_text)
 
         if self.read_author_names:
-            cleaned_text = f"{author} {_(self.voice_language, 'said')}: {cleaned_text}"
+            cleaned_text = f"{author} {_(self.voice_language, 'said')} - {cleaned_text}"
+
+        if self.read_platform_names:
+            cleaned_text = f"{_(self.voice_language, "Message from")} {_(self.voice_language, str(platform).lower())}: {cleaned_text}"
 
         self.message_buffer.append(cleaned_text)
 
@@ -1532,9 +1652,15 @@ class MainWindow(QMainWindow):
             if self.model is not None:
                 with self.model_lock:
                     with no_grad():
+                        if self.voice == _(self.language, "random"):
+                            num = randint(0, len(VOICES[self.voice_language]) - 1)
+                            voice = VOICES[self.voice_language][num]
+                        else:
+                            voice = self.voice
+
                         return self.model.apply_tts(
                             text=text,
-                            speaker=self.voice,
+                            speaker=voice,
                             # sample_rate=self.sample_rate,
                             put_accent=self.add_accents,
                             # put_yo=self.put_yo,
@@ -1689,3 +1815,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+

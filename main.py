@@ -209,8 +209,6 @@ class MainWindow(QMainWindow):
 
         self.auto_scroll = True
         self.add_accents = True
-        self.remove_emojis = True
-        self.remove_links = True
         self.filter_repeats = True
         self.read_author_names = False
         self.read_platform_names = False
@@ -234,6 +232,7 @@ class MainWindow(QMainWindow):
         self.buffer_maxsize = DEFAULT_BUFFER_SIZE
         self._pending_messages = deque()
         self.spam_hash_set = set()
+        self.spam_hash_queue = deque(maxlen=500)
         self.processed_messages = set()
 
         self.load_settings()
@@ -1389,8 +1388,6 @@ class MainWindow(QMainWindow):
             "speech_delay": self.speech_delay,
             "auto_scroll": self.auto_scroll,
             "add_accents": self.add_accents,
-            "remove_emojis": self.remove_emojis,
-            "remove_links": self.remove_links,
             "filter_repeats": self.filter_repeats,
             "read_author_names": self.read_author_names,
             "read_platform_names": self.read_platform_names,
@@ -1421,8 +1418,6 @@ class MainWindow(QMainWindow):
                 self.speech_delay = settings.get("speech_delay", self.speech_delay)
                 self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
                 self.add_accents = settings.get("add_accents", self.add_accents)
-                self.remove_emojis = settings.get("remove_emojis", self.remove_emojis)
-                self.remove_links = settings.get("remove_links", self.remove_links)
                 self.filter_repeats = settings.get(
                     "filter_repeats", self.filter_repeats
                 )
@@ -1531,32 +1526,39 @@ class MainWindow(QMainWindow):
     def clean_message(self, text):
         """Clean message from garbage"""
 
+        text = str(text or "")
+
         text = re.sub(r"https?://\S+", "", text)
         text = re.sub(r"www\.\S+", "", text)
 
         emoji_pattern = re.compile(
             "["
-            "\U0001f600-\U0001f64f"
-            "\U0001f300-\U0001f5ff"
-            "\U0001f680-\U0001f6ff"
-            "\U0001f1e0-\U0001f1ff"
-            "\U00002702-\U000027b0"
-            "\U000024c2-\U0001f251"
+            "\U0001F1E6-\U0001F1FF"  # flags
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F680-\U0001F6FF"  # transport & map
+            "\U0001F700-\U0001F77F"
+            "\U0001F780-\U0001F7FF"
+            "\U0001F800-\U0001F8FF"
+            "\U0001F900-\U0001F9FF"  # supplemental symbols
+            "\U0001FA00-\U0001FAFF"
+            "\U00002700-\U000027BF"
+            "\U00002600-\U000026FF"
+            "\U000024C2-\U0001F251"
             "]+",
             flags=re.UNICODE,
         )
-        text = emoji_pattern.sub(r"", text)
+        text = emoji_pattern.sub("", text)
+        # Remove emoji glue/modifiers that can remain after stripping main codepoints.
+        text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
+
         text = re.sub(r"[^\w\s\.\,\!\?\-\:\'\"\(\)]", " ", text)
 
         text = re.sub(r"\s+", " ", text)
         text = text.strip()
 
-        try:
-            min_len = int(self.min_length_var.get())
-            max_len = int(self.max_length_var.get())
-        except:
-            min_len = 2
-            max_len = 200
+        min_len = int(self.min_msg_length)
+        max_len = int(self.max_msg_length)
 
         if len(text) < min_len:
             return
@@ -1580,8 +1582,12 @@ class MainWindow(QMainWindow):
             self.messages_stats["spam_count"] += 1
             return True
 
-        if len(self.spam_hash_set) > 500:
-            self.spam_hash_set = set(list(self.spam_hash_set)[-500:])
+        if len(self.spam_hash_queue) == self.spam_hash_queue.maxlen:
+            oldest = self.spam_hash_queue.popleft()
+            self.spam_hash_set.discard(oldest)
+
+        self.spam_hash_queue.append(message_hash)
+        self.spam_hash_set.add(message_hash)
 
         return False
 
@@ -1619,9 +1625,10 @@ class MainWindow(QMainWindow):
         return converted_text
 
     def process_chat_message(self, msg_id, platform, author, message):
+        msg_id = str(msg_id)
         if msg_id in self.processed_messages:
             return
-        self.processed_messages.add(str(msg_id))
+        self.processed_messages.add(msg_id)
 
         cleaned_text = self.clean_message(message)
         if not cleaned_text:
@@ -1633,14 +1640,17 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.is_spam(platform, author, message):
+        if self.is_spam(platform, author, cleaned_text):
             self.add_message(
                 platform=platform, author=author, text=message, color="gray"
             )
             return
 
         if self.auto_translate:
-            cleaned_text = self._translate_text(message, self.voice_language)
+            cleaned_text = self._translate_text(cleaned_text, self.voice_language)
+            cleaned_text = self.clean_message(cleaned_text)
+            if not cleaned_text:
+                return
 
         self.add_message(platform=platform, author=author, text=cleaned_text)
 

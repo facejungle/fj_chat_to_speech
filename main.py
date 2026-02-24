@@ -119,6 +119,21 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
+def get_user_data_dir() -> str:
+    """Return a persistent per-user directory for runtime data."""
+    if sys.platform.startswith("win"):
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            return os.path.join(appdata, APP_NAME)
+    return os.path.join(os.path.expanduser("~"), f".{APP_NAME}")
+
+
+def get_settings_path() -> str:
+    settings_dir = get_user_data_dir()
+    os.makedirs(settings_dir, exist_ok=True)
+    return os.path.join(settings_dir, "settings.json")
+
+
 def configure_torch_hub_cache():
     """Use a stable user cache path only for frozen builds."""
     ensure_stdio_streams()
@@ -1469,62 +1484,76 @@ class MainWindow(QMainWindow):
             "yt_credentials": self.yt_credentials,
             "twitch_credentials": self.twitch_credentials,
         }
-        with open(resource_path(f"settings.json"), "w", encoding="utf-8") as f:
+        with open(get_settings_path(), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
 
         self.statusBar().showMessage(_(self.language, "Settings saved"), 3000)
 
     def load_settings(self):
-        try:
-            with open(resource_path(f"settings.json"), "r", encoding="utf-8") as f:
-                settings = json.load(f)
-                self.language = settings.get("language", self.language)
-                self.voice_language = settings.get(
-                    "voice_language", self.voice_language
-                )
-                self.voice = settings.get("voice", self.voice)
-                self.volume = settings.get("volume", self.volume)
-                self.speech_rate = settings.get("speech_rate", self.speech_rate)
-                self.speech_delay = settings.get("speech_delay", self.speech_delay)
-                self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
-                self.add_accents = settings.get("add_accents", self.add_accents)
-                self.filter_repeats = settings.get(
-                    "filter_repeats", self.filter_repeats
-                )
-                self.read_author_names = settings.get(
-                    "read_author_names", self.read_author_names
-                )
-                self.read_platform_names = settings.get(
-                    "read_platform_names", self.read_platform_names
-                )
-                self.subscribers_only = settings.get(
-                    "subscribers_only", self.subscribers_only
-                )
-                self.toxic_sense = settings.get(
-                    "toxic_sense", self.toxic_sense
-                )
-                self.auto_translate = settings.get(
-                    "auto_translate", self.auto_translate
-                )
-                self.buffer_maxsize = settings.get(
-                    "buffer_maxsize", self.buffer_maxsize
-                )
-                self.min_msg_length = settings.get(
-                    "min_msg_length", self.min_msg_length
-                )
-                self.max_msg_length = settings.get(
-                    "max_msg_length", self.max_msg_length
-                )
-                self.yt_credentials = settings.get(
-                    "yt_credentials", self.yt_credentials
-                )
-                self.twitch_credentials = settings.get(
-                    "twitch_credentials", twitch_default_credentials
-                )
-                if not isinstance(self.twitch_credentials, dict):
-                    self.twitch_credentials = twitch_default_credentials
+        settings_path = get_settings_path()
+        legacy_path = resource_path("settings.json")
+        path_candidates = [settings_path]
+        if legacy_path != settings_path:
+            path_candidates.append(legacy_path)
 
-                self.stop_words = self.load_stop_words(self.voice_language)
+        try:
+            settings = None
+            for path in path_candidates:
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as f:
+                        settings = json.load(f)
+                    break
+
+            if settings is None:
+                return
+
+            self.language = settings.get("language", self.language)
+            self.voice_language = settings.get(
+                "voice_language", self.voice_language
+            )
+            self.voice = settings.get("voice", self.voice)
+            self.volume = settings.get("volume", self.volume)
+            self.speech_rate = settings.get("speech_rate", self.speech_rate)
+            self.speech_delay = settings.get("speech_delay", self.speech_delay)
+            self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
+            self.add_accents = settings.get("add_accents", self.add_accents)
+            self.filter_repeats = settings.get(
+                "filter_repeats", self.filter_repeats
+            )
+            self.read_author_names = settings.get(
+                "read_author_names", self.read_author_names
+            )
+            self.read_platform_names = settings.get(
+                "read_platform_names", self.read_platform_names
+            )
+            self.subscribers_only = settings.get(
+                "subscribers_only", self.subscribers_only
+            )
+            self.toxic_sense = settings.get(
+                "toxic_sense", self.toxic_sense
+            )
+            self.auto_translate = settings.get(
+                "auto_translate", self.auto_translate
+            )
+            self.buffer_maxsize = settings.get(
+                "buffer_maxsize", self.buffer_maxsize
+            )
+            self.min_msg_length = settings.get(
+                "min_msg_length", self.min_msg_length
+            )
+            self.max_msg_length = settings.get(
+                "max_msg_length", self.max_msg_length
+            )
+            self.yt_credentials = settings.get(
+                "yt_credentials", self.yt_credentials
+            )
+            self.twitch_credentials = settings.get(
+                "twitch_credentials", twitch_default_credentials
+            )
+            if not isinstance(self.twitch_credentials, dict):
+                self.twitch_credentials = twitch_default_credentials
+
+            self.stop_words = self.load_stop_words(self.voice_language)
 
         except FileNotFoundError:
             pass  # No settings file, use defaults

@@ -312,16 +312,28 @@ def build():
             exe_path = f"dist/{FILE_NAME}.exe"
         elif PLATFORM == "Linux":
             exe_path = f"dist/{FILE_NAME}"
+
+            if not os.path.exists(exe_path):
+                print("[ERR] Binary not found")
+                return False
+
             create_launcher_script()
-            if os.path.exists(exe_path):
-                os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
+
+            os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
 
             launcher_path = "dist/run_chat_voice.sh"
             archive_path = f"dist/{FILE_NAME}.tar.gz"
+
             with tarfile.open(archive_path, "w:gz") as tar:
                 tar.add(exe_path, arcname=os.path.basename(exe_path))
                 tar.add(launcher_path, arcname=os.path.basename(launcher_path))
+
             print(f"[OK] Created tarball: {archive_path}")
+
+            os.remove(exe_path)
+            os.remove(launcher_path)
+
+            print("[OK] Removed original binary and launcher")
 
         if PLATFORM == "Darwin":
             app_path = f"dist/{FILE_NAME}"

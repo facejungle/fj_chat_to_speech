@@ -63,6 +63,24 @@ HIDDEN_IMPORTS = [
 
 EXCLUDES = []
 
+def safe_print(message):
+    """Print message safely handling Unicode encoding issues"""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        # Replace Unicode characters with ASCII equivalents
+        ascii_message = (message
+            .replace('✓', '[OK]')
+            .replace('📦', '[PKG]')
+            .replace('❌', '[ERR]')
+            .replace('⚠️', '[WARN]')
+            .replace('🔍', '[INFO]')
+            .replace('📁', '[DIR]')
+            .replace('✅', '[SUCCESS]')
+            .replace('=', '-')
+        )
+        print(ascii_message)
+
 def ensure_icons():
     """Convert PNG to platform-specific formats if needed"""
     if PLATFORM == "Windows" and not os.path.exists(ICON_PATH_WINDOWS):
@@ -77,10 +95,10 @@ def ensure_icons():
                         (128, 128), (256, 256)
                     ],
                 )
-                print(f"✓ Created Windows icon: {ICON_PATH_WINDOWS}")
+                safe_print(f"[OK] Created Windows icon: {ICON_PATH_WINDOWS}")
                 return ICON_PATH_WINDOWS
             except Exception as e:
-                print(f"⚠️ Failed to convert Windows icon: {e}")
+                safe_print(f"[WARN] Failed to convert Windows icon: {e}")
                 
     elif PLATFORM == "Darwin" and not os.path.exists(ICON_PATH_MAC):
         if os.path.exists(ICON_PATH):
@@ -112,11 +130,11 @@ def ensure_icons():
                 
                 # Clean up
                 shutil.rmtree(iconset_dir)
-                print(f"✓ Created macOS icon: {ICON_PATH_MAC}")
+                safe_print(f"[OK] Created macOS icon: {ICON_PATH_MAC}")
                 return ICON_PATH_MAC
                 
             except Exception as e:
-                print(f"⚠️ Failed to convert macOS icon: {e}")
+                safe_print(f"[WARN] Failed to convert macOS icon: {e}")
     
     # Return appropriate icon path
     if PLATFORM == "Windows" and os.path.exists(ICON_PATH_WINDOWS):
@@ -131,15 +149,15 @@ def create_virtual_env():
     venv_path = os.path.abspath(venv_path)
 
     if not os.path.exists(venv_path):
-        print(f"📦 Creating virtual environment at {venv_path}...")
+        safe_print(f"[PKG] Creating virtual environment at {venv_path}...")
         try:
             subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
-            print("✓ Virtual environment created")
+            safe_print("[OK] Virtual environment created")
         except subprocess.CalledProcessError as e:
-            print(f"❌ Failed to create virtual environment: {e}")
+            safe_print(f"[ERR] Failed to create virtual environment: {e}")
             return None
     else:
-        print(f"✓ Using existing virtual environment at {venv_path}")
+        safe_print(f"[OK] Using existing virtual environment at {venv_path}")
 
     if PLATFORM == "Windows":
         pip_path = os.path.join(venv_path, "Scripts", "pip.exe")
@@ -161,7 +179,7 @@ def clean_build_dirs():
     for spec_file in spec_files:
         os.remove(spec_file)
 
-    print("✓ Build directories cleaned")
+    safe_print("[OK] Build directories cleaned")
 
 def create_spec_file():
     """Create PyInstaller spec file with proper icon handling"""
@@ -182,7 +200,7 @@ def create_spec_file():
         if os.path.exists(src):
             data_files.append((src, dst))
         else:
-            print(f"⚠️ Data file not found and will be skipped: {src}")
+            safe_print(f"[WARN] Data file not found and will be skipped: {src}")
 
     excludes_str = str(EXCLUDES).replace("'", '"')
     hidden_imports_str = str(HIDDEN_IMPORTS).replace("'", '"')
@@ -285,7 +303,7 @@ exe = EXE(
 
 def install_dependencies():
     """Install required dependencies including Silero"""
-    print("📦 Installing dependencies...")
+    safe_print("[PKG] Installing dependencies...")
 
     venv_result = create_virtual_env()
     if not venv_result:
@@ -307,19 +325,25 @@ def install_dependencies():
         ], check=True)
     else:
         # For Windows/Linux with CUDA support
-        subprocess.run([pip_path, "install", "-r", "torch.requirements.txt"], check=True)
+        if os.path.exists("torch.requirements.txt"):
+            subprocess.run([pip_path, "install", "-r", "torch.requirements.txt"], check=True)
+        else:
+            # Fallback to CPU version if no requirements file
+            subprocess.run([pip_path, "install", "torch", "torchaudio"], check=True)
     
-    subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
-    print("📦 Installing PyInstaller...")
+    if os.path.exists("requirements.txt"):
+        subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
+    
+    safe_print("[PKG] Installing PyInstaller...")
     subprocess.run([pip_path, "install", "pyinstaller"], check=True)
 
     return venv_path, pip_path, python_path
 
 def build():
     """Build with UPX compression"""
-    print("\n" + "=" * 50)
-    print(f"Building for {PLATFORM}")
-    print("=" * 50)
+    safe_print("\n" + "=" * 50)
+    safe_print(f"Building for {PLATFORM}")
+    safe_print("=" * 50)
 
     venv_path, pip_path, python_path = install_dependencies()
     if not venv_path:
@@ -340,7 +364,7 @@ def build():
     try:
         subprocess.run(cmd, check=True, timeout=1800)  # 30 minutes timeout
 
-        print(f"\n✅ Build completed: dist/")
+        safe_print(f"\n[SUCCESS] Build completed: dist/")
 
         # Post-build handling
         if PLATFORM == "Darwin":
@@ -353,33 +377,34 @@ def build():
                     "dist",
                     f"{APP_NAME}.app"
                 )
-                print(f"✓ Created macOS bundle: {app_path}")
+                safe_print(f"[OK] Created macOS bundle: {app_path}")
         elif PLATFORM == "Windows":
             exe_path = f"dist/{FILE_NAME}.exe"
         else:  # Linux
             exe_path = f"dist/{FILE_NAME}"
             create_launcher_script()
-            os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
+            if os.path.exists(exe_path):
+                os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
 
         # Show size information
         if PLATFORM == "Darwin":
             zip_path = f"dist/{FILE_NAME}.zip"
             if os.path.exists(zip_path):
                 size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-                print(f"   Bundle size: {size_mb:.2f} MB")
+                safe_print(f"   Bundle size: {size_mb:.2f} MB")
         else:
             exe_path = f"dist/{FILE_NAME}.exe" if PLATFORM == "Windows" else f"dist/{FILE_NAME}"
             if os.path.exists(exe_path):
                 size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-                print(f"   Size: {size_mb:.2f} MB")
+                safe_print(f"   Size: {size_mb:.2f} MB")
 
         return True
         
     except subprocess.TimeoutExpired:
-        print("\n❌ Build timed out")
+        safe_print("\n[ERR] Build timed out")
         return False
     except Exception as e:
-        print(f"\n❌ Build failed: {e}")
+        safe_print(f"\n[ERR] Build failed: {e}")
         return False
 
 def create_launcher_script():
@@ -397,28 +422,29 @@ cd "$SCRIPT_DIR"
         f.write(launcher)
 
     # Make executable
-    st = os.stat(launcher_path)
-    os.chmod(launcher_path, st.st_mode | stat.S_IEXEC)
-    print("✓ Launcher script created: dist/run_chat_voice.sh")
+    if os.path.exists(launcher_path):
+        st = os.stat(launcher_path)
+        os.chmod(launcher_path, st.st_mode | stat.S_IEXEC)
+    safe_print("[OK] Launcher script created: dist/run_chat_voice.sh")
 
 def verify_assets():
     """Verify required assets exist"""
     assets_ok = True
     
     if not os.path.exists(MAIN_SCRIPT):
-        print(f"❌ {MAIN_SCRIPT} not found")
+        safe_print(f"[ERR] {MAIN_SCRIPT} not found")
         assets_ok = False
     
     if not os.path.exists(ICON_PATH):
-        print(f"⚠️ Icon not found at {ICON_PATH}")
+        safe_print(f"[WARN] Icon not found at {ICON_PATH}")
     
     return assets_ok
 
 def main():
     """Main function"""
-    print("=" * 60)
-    print(f"Optimized build of {APP_NAME} v{APP_VERSION} for {PLATFORM}")
-    print("=" * 60)
+    safe_print("=" * 60)
+    safe_print(f"Optimized build of {APP_NAME} v{APP_VERSION} for {PLATFORM}")
+    safe_print("=" * 60)
 
     if not verify_assets():
         return
@@ -427,27 +453,32 @@ def main():
     
     success = build()
 
-    print("\n" + "=" * 60)
-    print("Build Results")
-    print("=" * 60)
+    safe_print("\n" + "=" * 60)
+    safe_print("Build Results")
+    safe_print("=" * 60)
 
     if success:
-        print("\n✅ Build completed successfully!")
-        print(f"   Files are located in the 'dist/' directory")
+        safe_print("\n[SUCCESS] Build completed successfully!")
+        safe_print(f"   Files are located in the 'dist/' directory")
 
         # List all files in dist
-        print("\n📁 Output directory: dist/")
-        print("   Files:")
-        for file in sorted(Path("dist").iterdir()):
-            if file.is_file():
-                size = file.stat().st_size / (1024 * 1024)
-                print(f"   - {file.name} ({size:.2f} MB)")
-            elif file.is_dir() and PLATFORM == "Darwin":
-                # For macOS .app bundle
-                size = sum(f.stat().st_size for f in file.rglob('*')) / (1024 * 1024)
-                print(f"   - {file.name}/ ({size:.2f} MB)")
+        safe_print("\n[DIR] Output directory: dist/")
+        safe_print("   Files:")
+        
+        if os.path.exists("dist"):
+            for file in sorted(Path("dist").iterdir()):
+                if file.is_file():
+                    size = file.stat().st_size / (1024 * 1024)
+                    safe_print(f"   - {file.name} ({size:.2f} MB)")
+                elif file.is_dir() and PLATFORM == "Darwin":
+                    # For macOS .app bundle
+                    try:
+                        size = sum(f.stat().st_size for f in file.rglob('*') if f.is_file()) / (1024 * 1024)
+                        safe_print(f"   - {file.name}/ ({size:.2f} MB)")
+                    except:
+                        safe_print(f"   - {file.name}/")
     else:
-        print("\n❌ Build failed")
+        safe_print("\n[ERR] Build failed")
 
 if __name__ == "__main__":
     main()

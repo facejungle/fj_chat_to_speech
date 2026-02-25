@@ -2,12 +2,9 @@ name: Build FJ Chat to Speech
 
 on:
   push:
-    branches: [main]
     tags:
       - "v*"
-  pull_request:
-    branches: [main, master]
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   build-windows:

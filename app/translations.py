@@ -221,6 +221,7 @@ TRANSLATIONS = {
         "The file is corrupted": "Файл повреждён",
         "File with stop-words not found": "Файл стоп-слов не найден",
         "Failed to read stop-words file": "Ошибка чтения файла стоп-слов",
+        "Link": "Ссылка",
     },
 }
 

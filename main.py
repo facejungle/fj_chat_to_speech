@@ -2,20 +2,14 @@ import os
 from random import randint
 import sys
 from collections import defaultdict, deque
-import asyncio
 from datetime import datetime
-from functools import lru_cache
 import gc
 import json
 import html
 import re
 import threading
-import inspect
-import multiprocessing
 from time import sleep
-from typing import TypedDict
 import hashlib
-import colorsys
 
 from detoxify import Detoxify
 from num2words import num2words
@@ -50,7 +44,8 @@ from scipy.signal import resample
 import numpy as np
 from googletrans import Translator
 
-from app.translations import DEFAULT_LANGUAGE, TRANSLATIONS, _
+from app.schema import MessageStatsTD, TwitchCredentialsTD
+from app.translations import DEFAULT_LANGUAGE, TRANSLATIONS, _, translate_text
 from app.twitch.auth_worker import AuthWorker
 from app.twitch.chat_listener import TwitchChatListener
 from app.constants import (
@@ -61,6 +56,18 @@ from app.constants import (
     VOICES,
     MODELS,
 )
+from app.utils import (
+    avatar_colors_from_name,
+    clean_message,
+    clear_detoxify_checkpoint_cache,
+    configure_torch_hub_cache,
+    ensure_stdio_streams,
+    find_cached_detoxify_checkpoint,
+    find_cached_silero_repo,
+    get_settings_path,
+    prefer_cached_silero_package,
+    resource_path,
+)
 from app.youtube.chat_parser import YouTubeChatParser
 
 size_policy_fixed = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -70,161 +77,9 @@ window_flag_fixed = (
     | Qt.WindowType.WindowTitleHint
     | Qt.WindowType.WindowCloseButtonHint
 )
-
-
-class MessageStatsTD(TypedDict):
-    messages_count: int
-    spoken_count: int
-    spam_count: int
-
-
-class TwitchCredentialsTD(TypedDict):
-    client_id: str
-    access: str
-    refresh: str
-    nickname: str
-
-
 twitch_default_credentials = TwitchCredentialsTD(
     client_id=None, access=None, refresh=None, nickname=None
 )
-
-
-class _NullStream:
-    """Fallback stream used when GUI builds have no stdio handles."""
-
-    encoding = "utf-8"
-
-    def write(self, _text):
-        return 0
-
-    def flush(self):
-        return None
-
-    def isatty(self):
-        return False
-
-
-def ensure_stdio_streams():
-    """Torch hub download path expects writable stderr/stdout streams."""
-    if sys.stdout is None:
-        sys.stdout = _NullStream()
-    if sys.stderr is None:
-        sys.stderr = _NullStream()
-
-
-def resource_path(relative_path: str) -> str:
-    """Resolve resource paths for source and PyInstaller onefile builds."""
-    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
-    return os.path.join(base_path, relative_path)
-
-
-def get_user_data_dir() -> str:
-    """Return a persistent per-user directory for runtime data."""
-    if sys.platform.startswith("win"):
-        appdata = os.getenv("APPDATA")
-        if appdata:
-            return os.path.join(appdata, APP_NAME)
-    return os.path.join(os.path.expanduser("~"), f".{APP_NAME}")
-
-
-def get_settings_path() -> str:
-    settings_dir = get_user_data_dir()
-    os.makedirs(settings_dir, exist_ok=True)
-    return os.path.join(settings_dir, "settings.json")
-
-
-def configure_torch_hub_cache():
-    """Use a stable user cache path only for frozen builds."""
-    ensure_stdio_streams()
-
-    if not getattr(sys, "frozen", False):
-        return
-
-    home_dir = os.path.expanduser("~")
-    cache_root = os.path.join(home_dir, ".cache")
-    torch_home = os.path.join(cache_root, "torch")
-    torch_hub_dir = os.path.join(torch_home, "hub")
-
-    os.environ.setdefault("XDG_CACHE_HOME", cache_root)
-    os.environ.setdefault("TORCH_HOME", torch_home)
-    os.makedirs(torch_hub_dir, exist_ok=True)
-    hub.set_dir(torch_hub_dir)
-
-
-def find_cached_silero_repo():
-    hub_dir = hub.get_dir()
-    if not os.path.isdir(hub_dir):
-        return None
-
-    repo_candidates = []
-    prefix = "snakers4_silero-models_"
-    for entry in os.listdir(hub_dir):
-        if entry.startswith(prefix):
-            repo_path = os.path.join(hub_dir, entry)
-            if os.path.isdir(repo_path):
-                repo_candidates.append(repo_path)
-
-    if not repo_candidates:
-        return None
-    return max(repo_candidates, key=os.path.getmtime)
-
-
-def prefer_cached_silero_package(repo_path):
-    """Force hubconf import to resolve silero package from cached torch hub repo."""
-    if not repo_path:
-        return
-
-    src_dir = os.path.join(repo_path, "src")
-    if os.path.isdir(src_dir) and src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-
-    # Drop bundled silero modules from PyInstaller temp path to avoid redownload on each launch.
-    for module_name in list(sys.modules.keys()):
-        if module_name == "silero" or module_name.startswith("silero."):
-            del sys.modules[module_name]
-
-
-def find_cached_detoxify_checkpoint(model_type="multilingual"):
-    hub_dir = hub.get_dir()
-    checkpoints_dir = os.path.join(hub_dir, "checkpoints")
-    if not os.path.isdir(checkpoints_dir):
-        return None
-
-    model_markers = {
-        "original": "toxic_original",
-        "unbiased": "toxic_debiased",
-        "multilingual": "multilingual_debiased",
-        "original-small": "original-albert",
-        "unbiased-small": "unbiased-albert",
-    }
-    marker = model_markers.get(model_type, model_type)
-
-    checkpoint_candidates = []
-    for entry in os.listdir(checkpoints_dir):
-        if entry.endswith(".ckpt") and marker in entry:
-            checkpoint_path = os.path.join(checkpoints_dir, entry)
-            if os.path.isfile(checkpoint_path):
-                checkpoint_candidates.append(checkpoint_path)
-
-    if not checkpoint_candidates:
-        return None
-    return max(checkpoint_candidates, key=os.path.getmtime)
-
-
-def _proc_translate_external(q, txt, dst):
-    """Module-level worker for multiprocessing spawn on Windows."""
-    try:
-        tr = Translator()
-        r = tr.translate(txt, dest=dst)
-        if inspect.isawaitable(r):
-            r = asyncio.run(r)
-        q.put(getattr(r, "text", txt))
-    except Exception as e:
-        try:
-            q.put({"__err__": str(e)})
-        except Exception:
-            pass
 
 
 class MainWindow(QMainWindow):
@@ -886,7 +741,11 @@ class MainWindow(QMainWindow):
                     if self.subscribers_only and not is_member:
                         return
                     self.process_chat_message(
-                        msg_id=msg_id, platform="Twitch", author=author, message=msg
+                        msg_id=msg_id,
+                        platform="Twitch",
+                        author=author,
+                        message=msg,
+                        is_member=is_member,
                     )
 
                 def on_error(err):
@@ -1008,7 +867,11 @@ class MainWindow(QMainWindow):
                     if self.subscribers_only and not is_member:
                         return
                     self.process_chat_message(
-                        msg_id=msg_id, platform="YouTube", author=author, message=msg
+                        msg_id=msg_id,
+                        platform="YouTube",
+                        author=author,
+                        message=msg,
+                        is_member=is_member,
                     )
 
                 def on_error(err):
@@ -1115,18 +978,15 @@ class MainWindow(QMainWindow):
     def on_change_toxic_sense(self, value):
         self.toxic_sense = value / 100.0
         self.toxic_sense_label_value.setText(f"{self.toxic_sense:.2f}")
-        
+
     def on_delays_settings_action(self):
         dlg = QDialog(self)
-        dlg.setFixedSize(600, 300)
         dlg.setSizePolicy(size_policy_fixed)
         dlg.setWindowFlags(window_flag_fixed)
         dlg.setWindowTitle(_(self.language, "Delays and processing"))
 
-        root_widget = QWidget(dlg)
-        root_widget.setMinimumSize(600, 300)
-        root_widget.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
-        root_layout = QVBoxLayout(root_widget)
+        root_layout = QVBoxLayout(dlg)
+        root_layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
 
         # Toxicity threshold
 
@@ -1134,7 +994,9 @@ class MainWindow(QMainWindow):
         toxic_sense_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(toxic_sense_v_layout)
 
-        self.toxic_sense_label_desc = QLabel(_(self.language, "Toxicity threshold (1 = OFF)"))
+        self.toxic_sense_label_desc = QLabel(
+            _(self.language, "Toxicity threshold (1 = OFF)")
+        )
         toxic_sense_v_layout.addWidget(self.toxic_sense_label_desc)
 
         toxic_sense_layout = QHBoxLayout()
@@ -1240,6 +1102,8 @@ class MainWindow(QMainWindow):
         self.speech_delay_label_value = QLabel(str(self.speech_delay))
         speech_delay_layout.addWidget(self.speech_delay_label_value)
 
+        dlg.adjustSize()
+        dlg.setFixedSize(dlg.sizeHint())
         dlg.finished.connect(self.save_settings)
         dlg.exec()
 
@@ -1401,7 +1265,7 @@ class MainWindow(QMainWindow):
         time_str = datetime.now().strftime("%H:%M:%S")
         safe_author = html.escape(str(author))
         avatar_text = safe_author[:1].upper() if safe_author else "?"
-        avatar_bg, avatar_fg = _avatar_colors_from_name(safe_author)
+        avatar_bg, avatar_fg = avatar_colors_from_name(safe_author)
         white_color = "#fff"
         scrollbar = self.chat_text.verticalScrollBar()
         prev_scroll_value = scrollbar.value()
@@ -1508,18 +1372,14 @@ class MainWindow(QMainWindow):
                 return
 
             self.language = settings.get("language", self.language)
-            self.voice_language = settings.get(
-                "voice_language", self.voice_language
-            )
+            self.voice_language = settings.get("voice_language", self.voice_language)
             self.voice = settings.get("voice", self.voice)
             self.volume = settings.get("volume", self.volume)
             self.speech_rate = settings.get("speech_rate", self.speech_rate)
             self.speech_delay = settings.get("speech_delay", self.speech_delay)
             self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
             self.add_accents = settings.get("add_accents", self.add_accents)
-            self.filter_repeats = settings.get(
-                "filter_repeats", self.filter_repeats
-            )
+            self.filter_repeats = settings.get("filter_repeats", self.filter_repeats)
             self.read_author_names = settings.get(
                 "read_author_names", self.read_author_names
             )
@@ -1529,24 +1389,12 @@ class MainWindow(QMainWindow):
             self.subscribers_only = settings.get(
                 "subscribers_only", self.subscribers_only
             )
-            self.toxic_sense = settings.get(
-                "toxic_sense", self.toxic_sense
-            )
-            self.auto_translate = settings.get(
-                "auto_translate", self.auto_translate
-            )
-            self.buffer_maxsize = settings.get(
-                "buffer_maxsize", self.buffer_maxsize
-            )
-            self.min_msg_length = settings.get(
-                "min_msg_length", self.min_msg_length
-            )
-            self.max_msg_length = settings.get(
-                "max_msg_length", self.max_msg_length
-            )
-            self.yt_credentials = settings.get(
-                "yt_credentials", self.yt_credentials
-            )
+            self.toxic_sense = settings.get("toxic_sense", self.toxic_sense)
+            self.auto_translate = settings.get("auto_translate", self.auto_translate)
+            self.buffer_maxsize = settings.get("buffer_maxsize", self.buffer_maxsize)
+            self.min_msg_length = settings.get("min_msg_length", self.min_msg_length)
+            self.max_msg_length = settings.get("max_msg_length", self.max_msg_length)
+            self.yt_credentials = settings.get("yt_credentials", self.yt_credentials)
             self.twitch_credentials = settings.get(
                 "twitch_credentials", twitch_default_credentials
             )
@@ -1566,14 +1414,14 @@ class MainWindow(QMainWindow):
         except FileNotFoundError:
             self.add_sys_message(
                 author="load_stop_words()",
-                text=f"File with stop-words ({source_path}) not found",
-                status="error"
+                text=f"{_(self.language, "File with stop-words not found")}: ({source_path})",
+                status="error",
             )
         except Exception as e:
             self.add_sys_message(
                 author="load_stop_words()",
-                text=f"Filed to read file with stop-words: {e}",
-                status="error"
+                text=f"{_(self.language, "Failed to read stop-words file")}: {translate_text(str(e), self.language)}",
+                status="error",
             )
         return tuple()
 
@@ -1583,29 +1431,47 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def init_detoxify(self):
+        cached_checkpoint = None
         try:
             ensure_stdio_streams()
             self.add_sys_message(
                 author="Detoxify", text=_(self.language, "detoxify_loading")
             )
-            if getattr(sys, "frozen", False):
-                cached_checkpoint = find_cached_detoxify_checkpoint("multilingual")
-                if cached_checkpoint:
-                    self.detox_model = Detoxify(
-                        model_type="multilingual",
-                        checkpoint=cached_checkpoint,
-                    )
-                else:
-                    self.detox_model = Detoxify("multilingual")
+            cached_checkpoint = find_cached_detoxify_checkpoint("multilingual")
+            if cached_checkpoint:
+                self.detox_model = Detoxify(
+                    model_type="multilingual",
+                    checkpoint=cached_checkpoint,
+                )
             else:
                 self.detox_model = Detoxify("multilingual")
             self.add_sys_message(
-                author="Detoxify", text=_(self.language, "detoxify_loaded"), status="success"
+                author="Detoxify",
+                text=_(self.language, "detoxify_loaded"),
+                status="success",
             )
+
         except Exception as e:
+            error_text = str(e)
+            if (
+                "PytorchStreamReader failed reading zip archive: failed finding central directory"
+                in error_text
+            ):
+                if cached_checkpoint and os.path.isfile(cached_checkpoint):
+                    try:
+                        self.add_sys_message(
+                            author="Detoxify",
+                            text=f"{_(self.language, "detoxify_loading_failed")}. {_(self.language, "The file is corrupted")}",
+                            status="error",
+                        )
+                        os.remove(cached_checkpoint)
+                        return
+                    except OSError:
+                        pass
+                clear_detoxify_checkpoint_cache("multilingual")
             self.add_sys_message(
                 author="Detoxify",
-                text=f"{_(self.language, "detoxify_loading_failed")}. {e}",
+                text=f"{_(self.language, "detoxify_loading_failed")}. {translate_text(str(e), self.language)}",
                 status="error",
             )
 
@@ -1659,7 +1525,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.add_sys_message(
                 author="Silero",
-                text=f"{_(self.language, "silero_failed")}. {e}",
+                text=f"{_(self.language, "silero_failed")}. {translate_text(str(e), self.language)}",
                 status="error",
             )
             return False
@@ -1671,51 +1537,6 @@ class MainWindow(QMainWindow):
                 os.remove(silero_catalog_path)
             except OSError:
                 pass
-
-    def clean_message(self, text):
-        """Clean message from garbage"""
-
-        text = str(text or "")
-
-        text = re.sub(r"https?://\S+", "", text)
-        text = re.sub(r"www\.\S+", "", text)
-
-        emoji_pattern = re.compile(
-            "["
-            "\U0001f1e6-\U0001f1ff"  # flags
-            "\U0001f300-\U0001f5ff"  # symbols & pictographs
-            "\U0001f600-\U0001f64f"  # emoticons
-            "\U0001f680-\U0001f6ff"  # transport & map
-            "\U0001f700-\U0001f77f"
-            "\U0001f780-\U0001f7ff"
-            "\U0001f800-\U0001f8ff"
-            "\U0001f900-\U0001f9ff"  # supplemental symbols
-            "\U0001fa00-\U0001faff"
-            "\U00002700-\U000027bf"
-            "\U00002600-\U000026ff"
-            "\U000024c2-\U0001f251"
-            "]+",
-            flags=re.UNICODE,
-        )
-        text = emoji_pattern.sub("", text)
-        # Remove emoji glue/modifiers that can remain after stripping main codepoints.
-        text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
-
-        text = re.sub(r"[^\w\s\.\,\!\?\-\:\'\"\(\)]", " ", text)
-
-        text = re.sub(r"\s+", " ", text)
-        text = text.strip()
-
-        min_len = int(self.min_msg_length)
-        max_len = int(self.max_msg_length)
-
-        if len(text) < min_len:
-            return
-
-        if len(text) > max_len:
-            text = text[:max_len] + "..."
-
-        return text
 
     def get_msg_hash(self, platform, author, message):
         return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()
@@ -1773,42 +1594,50 @@ class MainWindow(QMainWindow):
         converted_text = re.sub(number_pattern, replace_number, text)
         return converted_text
 
-    def process_chat_message(self, msg_id, platform, author, message):
+    def process_chat_message(self, msg_id, platform, author, message, is_member):
         msg_id = str(msg_id)
         if msg_id in self.processed_messages:
             return
         self.processed_messages.add(msg_id)
 
-        cleaned_text = self.clean_message(message)
+        cleaned_text = clean_message(message)
         if not cleaned_text:
             return
 
         if self.contains_stop_words(cleaned_text):
             self.add_message(
-                platform=platform, author=author, text=f"[{_(self.language, "Stop words")}] {message}", color="gray"
+                platform=platform,
+                author=author,
+                text=f"[{_(self.language, "Stop words")}] {message}",
+                color="gray",
             )
             return
 
-        if self.is_spam(platform, author, cleaned_text):
+        if is_member is False and self.is_spam(platform, author, cleaned_text):
             self.add_message(
-                platform=platform, author=author, text=f"[{_(self.language, "SPAM")}] {message}", color="gray"
+                platform=platform,
+                author=author,
+                text=f"[{_(self.language, "SPAM")}] {message}",
+                color="gray",
             )
             return
-        
+
         if self.detox_model:
             sentiment = self.detox_model.predict(cleaned_text)
             detox_key = max(sentiment, key=sentiment.get)
             detox_value = sentiment[detox_key]
             if detox_value > self.toxic_sense:
                 self.add_message(
-                    platform=platform, author=author, text=f"[{_(self.language, str(detox_key).replace("_", " ").capitalize())}] {message}", color="gray"
+                    platform=platform,
+                    author=author,
+                    text=f"[{_(self.language, str(detox_key).replace("_", " ").capitalize())}] {message}",
+                    color="gray",
                 )
                 return
 
-
         if self.auto_translate:
-            cleaned_text = self._translate_text(cleaned_text, self.voice_language)
-            cleaned_text = self.clean_message(cleaned_text)
+            cleaned_text = translate_text(cleaned_text, self.voice_language)
+            cleaned_text = clean_message(cleaned_text)
             if not cleaned_text:
                 return
 
@@ -1828,19 +1657,6 @@ class MainWindow(QMainWindow):
             cleaned_text = f"{_(self.voice_language, "Message from")} {_(self.voice_language, str(platform).lower())}: {cleaned_text}"
 
         self.message_buffer.append(cleaned_text)
-
-    def _translate_text(self, text, dest):
-        try:
-            q = multiprocessing.Queue()
-            _proc_translate_external(q, text, dest)
-            return q.get_nowait()
-        except Exception as e:
-            # self.add_sys_message(
-            #     author="_translate_text()",
-            #     text=f"{_(self.language, 'Failed to translate text')}. {e}",
-            #     status="error",
-            # )
-            return text
 
     # == Audio processing ==
 
@@ -1866,7 +1682,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.add_sys_message(
                 author="text_to_speech()",
-                text=f"{_(self.language, "Error convert text to speech")}, {e}. TEXT: {text}",
+                text=f"{_(self.language, "Error convert text to speech")}, {translate_text(str(e), self.language)}. TEXT: {text}",
                 status="error",
             )
 
@@ -1911,7 +1727,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.add_sys_message(
                 author="speak()",
-                text=f"{_(self.language, "Audio playback error")}. {e}",
+                text=f"{_(self.language, "Audio playback error")}. {translate_text(str(e), self.language)}",
                 status="error",
             )
 
@@ -1923,7 +1739,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.add_sys_message(
                 author="play_audio()",
-                text=f"{_(self.language, 'Audio playback error')}. {e}",
+                text=f"{_(self.language, 'Audio playback error')}. {translate_text(str(e), self.language)}",
                 status="error",
             )
         finally:
@@ -1946,7 +1762,7 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.add_sys_message(
                     author="process_audio_loop()",
-                    text=f"{_(self.language, "Audio queue error")}. {e}",
+                    text=f"{_(self.language, "Audio queue error")}. {translate_text(str(e), self.language)}",
                     status="error",
                 )
             finally:
@@ -1965,51 +1781,20 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.add_sys_message(
                     author="process_msg_buffer_loop()",
-                    text=f"{_(self.language, "Error process message buffer")}. {e}",
+                    text=f"{_(self.language, "Error process message buffer")}. {translate_text(str(e), self.language)}",
                     status="error",
                 )
             finally:
                 sleep(0.2)
 
 
-@lru_cache
-def _avatar_colors_from_name(name: str):
-    """Deterministic avatar background and foreground color from author name."""
-    if not name:
-        return "#777777", "#ffffff"
-
-    # Use MD5 hash to get stable value from name
-    digest = hashlib.md5(name.encode("utf-8")).digest()
-    # Take 3 bytes to form a value for hue
-    val = int.from_bytes(digest[:3], "big")
-    hue = val % 360
-
-    # HLS -> colorsys uses H,L,S where H in [0,1]
-    h = hue / 360.0
-    l = 0.50
-    s = 0.65
-    r, g, b = colorsys.hls_to_rgb(h, l, s)
-    r_i, g_i, b_i = int(r * 255), int(g * 255), int(b * 255)
-    bg = f"#{r_i:02x}{g_i:02x}{b_i:02x}"
-
-    # Choose contrasting text color based on luminance
-    lum = 0.299 * r + 0.587 * g + 0.114 * b
-    fg = "#000000" if lum > 0.6 else "#ffffff"
-    return bg, fg
-
-
 def main():
     app = QApplication(sys.argv)
-
-    # Optional: Set application style
     app.setStyle("Fusion")
-
     window = MainWindow()
     window.show()
-
     sys.exit(app.exec())
 
 
 if __name__ == "__main__":
-
     main()

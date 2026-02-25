@@ -8,6 +8,7 @@ import sys
 from torch import hub
 
 from app.constants import APP_NAME
+from app.translations import _
 
 
 class _NullStream:
@@ -45,7 +46,7 @@ def get_user_data_dir() -> str:
         appdata = os.getenv("APPDATA")
         if appdata:
             return os.path.join(appdata, APP_NAME)
-    return os.path.join(os.path.expanduser("~"), f".{APP_NAME}")
+    return os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower().replace(" ", "_")}")
 
 
 def get_settings_path() -> str:
@@ -174,13 +175,13 @@ def clear_detoxify_checkpoint_cache(model_type="multilingual"):
             pass
 
 
-def clean_message(text):
+def clean_message(text, ui_lang):
     """Clean message from garbage"""
 
     text = str(text or "")
 
-    text = re.sub(r"https?://\S+", "", text)
-    text = re.sub(r"www\.\S+", "", text)
+    text = re.sub(r"https?://\S+", f":{_(ui_lang, "Link")}:", text)
+    text = re.sub(r"www\.\S+", f":{_(ui_lang, "Link")}:", text)
 
     emoji_pattern = re.compile(
         "["

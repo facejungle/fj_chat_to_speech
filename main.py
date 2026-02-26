@@ -1660,6 +1660,7 @@ class MainWindow(QMainWindow):
     def process_toxic_message(self, platform, author, is_staff=False, is_owner=False):
         platform_author = f"{platform}:{author}"
         self.messages_stats["filtered_count"] += 1
+        self.on_change_stats()
 
         if is_staff is False and is_owner is False:
             self.toxic_dict[platform_author] += 1

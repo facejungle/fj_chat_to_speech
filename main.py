@@ -65,6 +65,7 @@ from app.utils import (
     find_cached_detoxify_checkpoint,
     find_cached_silero_repo,
     get_settings_path,
+    icon_path,
     prefer_cached_silero_package,
     resource_path,
 )
@@ -85,7 +86,7 @@ twitch_default_credentials = TwitchCredentialsTD(
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        icon = QIcon(resource_path("img/icon.png"))
+        icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1200, 600)
@@ -101,13 +102,13 @@ class MainWindow(QMainWindow):
         self.speech_rate = 1.00
         self.speech_delay = 1.5
         self.is_paused = False
-        self.min_msg_length = 5
+        self.min_msg_length = 2
         self.max_msg_length = 200
-        self.toxic_sense = 0.25
+        self.toxic_sense = 0.6
+        self.ban_limit = 5
 
         self.auto_scroll = True
         self.add_accents = True
-        self.filter_repeats = True
         self.read_author_names = False
         self.read_platform_names = False
         self.subscribers_only = False
@@ -129,8 +130,8 @@ class MainWindow(QMainWindow):
         # Message queue
         self.buffer_maxsize = DEFAULT_BUFFER_SIZE
         self._pending_messages = deque()
-        self.spam_hash_set = set()
-        self.spam_hash_queue = deque(maxlen=500)
+        self.toxic_dict = defaultdict(int)
+        self.banned_set = set()
         self.processed_messages = set()
 
         self.load_settings()
@@ -218,6 +219,10 @@ class MainWindow(QMainWindow):
 
         msg_settings_menu = menu_bar.addMenu(_(self.language, "Message Settings"))
 
+        banned_action = QAction(_(self.language, "List of banned"), msg_settings_menu)
+        banned_action.triggered.connect(self.on_list_of_banned_action)
+        msg_settings_menu.addAction(banned_action)
+
         stop_words_action = QAction(_(self.language, "Stop words"), msg_settings_menu)
         stop_words_action.triggered.connect(self.on_stop_words_action)
         msg_settings_menu.addAction(stop_words_action)
@@ -227,14 +232,6 @@ class MainWindow(QMainWindow):
         )
         delays_action.triggered.connect(self.on_delays_settings_action)
         msg_settings_menu.addAction(delays_action)
-
-        filter_repeats_action = QAction(
-            _(self.language, "Filter repeats"), msg_settings_menu
-        )
-        filter_repeats_action.setCheckable(True)
-        filter_repeats_action.setChecked(self.filter_repeats)
-        filter_repeats_action.triggered.connect(self.toggle_filter_repeats)
-        msg_settings_menu.addAction(filter_repeats_action)
 
         read_authors_action = QAction(
             _(self.language, "Read author names"), msg_settings_menu
@@ -312,9 +309,9 @@ class MainWindow(QMainWindow):
         self.connect_twitch_button = QPushButton(_(self.language, "Connect"))
         self.connect_twitch_button.clicked.connect(self.on_click_connect_twitch)
         twitch_layout.addWidget(self.connect_twitch_button)
-        # self.configure_twitch_button = QPushButton(_(self.language, "Configure"))
-        # self.configure_twitch_button.clicked.connect(self.on_configure_twitch)
-        # twitch_layout.addWidget(self.configure_twitch_button)
+        self.configure_twitch_button = QPushButton(_(self.language, "Configure"))
+        self.configure_twitch_button.clicked.connect(self.on_configure_twitch)
+        twitch_layout.addWidget(self.configure_twitch_button)
         connections_grid.addLayout(twitch_layout, 0, 1)
 
     def setup_pause_button_color(self):
@@ -520,7 +517,7 @@ class MainWindow(QMainWindow):
         self.connect_twitch_button.setText(
             _(self.language, "Connected" if self.twitch_is_connected else "Connect")
         )
-        # self.configure_twitch_button.setText(_(self.language, "Configure"))
+        self.configure_twitch_button.setText(_(self.language, "Configure"))
 
         self.chat_header_label.setText(_(self.language, "Message Log"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
@@ -737,15 +734,24 @@ class MainWindow(QMainWindow):
                     self.twitch_credentials["refresh"] = refresh
                     return access
 
-                def on_msg(msg_id, author, msg, is_member):
-                    if self.subscribers_only and not is_member:
+                def on_msg(
+                    msg_id,
+                    author,
+                    msg,
+                    is_sponsor=False,
+                    is_staff=False,
+                    is_owner=False,
+                ):
+                    if self.subscribers_only and is_sponsor is False:
                         return
                     self.process_chat_message(
                         msg_id=msg_id,
                         platform="Twitch",
                         author=author,
                         message=msg,
-                        is_member=is_member,
+                        is_sponsor=is_sponsor,
+                        is_staff=is_staff,
+                        is_owner=is_owner,
                     )
 
                 def on_error(err):
@@ -863,15 +869,24 @@ class MainWindow(QMainWindow):
                     if res != QMessageBox.StandardButton.Yes:
                         return
 
-                def on_msg(msg_id, author, msg, is_member):
-                    if self.subscribers_only and not is_member:
+                def on_msg(
+                    msg_id,
+                    author,
+                    msg,
+                    is_sponsor=False,
+                    is_staff=False,
+                    is_owner=False,
+                ):
+                    if self.subscribers_only and is_sponsor is False:
                         return
                     self.process_chat_message(
                         msg_id=msg_id,
                         platform="YouTube",
                         author=author,
                         message=msg,
-                        is_member=is_member,
+                        is_sponsor=is_sponsor,
+                        is_staff=is_staff,
+                        is_owner=is_owner,
                     )
 
                 def on_error(err):
@@ -915,6 +930,37 @@ class MainWindow(QMainWindow):
         self.connect_yt_button.setText(_(self.language, "Connect"))
         self.connect_yt_button.setPalette(self.style().standardPalette())
 
+    def on_list_of_banned_action(self):
+        dlg = QDialog(self)
+        dlg.setMinimumSize(600, 300)
+        dlg.setWindowTitle(_(self.language, "List of banned"))
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
+
+        self.banned_text = QPlainTextEdit()
+        self.banned_text.setPlainText("\n".join(self.banned_set))
+
+        self.banned_text.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+
+        layout.addWidget(self.banned_text, 1)
+
+        save_banned_btn = QPushButton(_(self.language, "Save"))
+        save_banned_btn.clicked.connect(self.on_save_banned)
+
+        layout.addWidget(save_banned_btn)
+
+        dlg.exec()
+
+    def on_save_banned(self):
+        content = self.banned_text.toPlainText().strip()
+        content = set([w.strip() for w in content.splitlines() if w.strip()])
+        self.banned_set = content  # TODO: Need a concat with new items if updated (from self.process_toxic_message)
+        self.save_banned_list()
+        self.statusBar().showMessage(_(self.language, "Saved"), 3000)
+
     def on_stop_words_action(self):
         dlg = QDialog(self)
         dlg.setMinimumSize(600, 300)
@@ -932,7 +978,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.stop_words_text, 1)
 
-        save_stop_words_btn = QPushButton(_(self.language, "Save stop words"))
+        save_stop_words_btn = QPushButton(_(self.language, "Save"))
         save_stop_words_btn.clicked.connect(self.on_save_stop_words)
 
         layout.addWidget(save_stop_words_btn)
@@ -979,6 +1025,10 @@ class MainWindow(QMainWindow):
         self.toxic_sense = value / 100.0
         self.toxic_sense_label_value.setText(f"{self.toxic_sense:.2f}")
 
+    def on_change_ban_limit(self, value):
+        self.ban_limit = value
+        self.ban_limit_label_value.setText(str(self.ban_limit))
+
     def on_delays_settings_action(self):
         dlg = QDialog(self)
         dlg.setSizePolicy(size_policy_fixed)
@@ -1011,6 +1061,30 @@ class MainWindow(QMainWindow):
 
         self.toxic_sense_label_value = QLabel(str(self.toxic_sense))
         toxic_sense_layout.addWidget(self.toxic_sense_label_value)
+
+        # Number of messages to ban
+
+        ban_limit_v_layout = QVBoxLayout()
+        ban_limit_v_layout.setContentsMargins(0, 0, 0, PADDING)
+        root_layout.addLayout(ban_limit_v_layout)
+
+        self.ban_limit_label_desc = QLabel(
+            _(self.language, "The number of toxic messages leading to ban")
+        )
+        ban_limit_v_layout.addWidget(self.ban_limit_label_desc)
+
+        ban_limit_layout = QHBoxLayout()
+        ban_limit_v_layout.addLayout(ban_limit_layout)
+
+        ban_limit_slider = QSlider(Qt.Orientation.Horizontal)
+        ban_limit_layout.addWidget(ban_limit_slider)
+        ban_limit_slider.setMinimum(1)
+        ban_limit_slider.setMaximum(100)
+        ban_limit_slider.setValue(self.ban_limit)
+        ban_limit_slider.valueChanged.connect(self.on_change_ban_limit)
+
+        self.ban_limit_label_value = QLabel(str(self.ban_limit))
+        ban_limit_layout.addWidget(self.ban_limit_label_value)
 
         # Queue depth
 
@@ -1136,9 +1210,6 @@ class MainWindow(QMainWindow):
     def toggle_add_accents(self, checked):
         self.add_accents = checked
 
-    def toggle_filter_repeats(self, checked):
-        self.filter_repeats = checked
-
     def toggle_read_author_names(self, checked):
         self.read_author_names = checked
 
@@ -1212,7 +1283,7 @@ class MainWindow(QMainWindow):
         return (
             f"{_(self.language, 'Messages')}: {self.messages_stats['messages_count']} | "
             f"{_(self.language, 'Spoken')}: {self.messages_stats['spoken_count']} | "
-            f"{_(self.language, 'Spam')}: {self.messages_stats['spam_count']} | "
+            f"{_(self.language, 'Filtered')}: {self.messages_stats['filtered_count']} | "
             f"{_(self.language, 'In queue')}: {len(self.audio_queue)}"
         )
 
@@ -1336,11 +1407,11 @@ class MainWindow(QMainWindow):
             "speech_delay": self.speech_delay,
             "auto_scroll": self.auto_scroll,
             "add_accents": self.add_accents,
-            "filter_repeats": self.filter_repeats,
             "read_author_names": self.read_author_names,
             "read_platform_names": self.read_platform_names,
             "subscribers_only": self.subscribers_only,
             "toxic_sense": self.toxic_sense,
+            "ban_limit": self.ban_limit,
             "auto_translate": self.auto_translate,
             "min_msg_length": self.min_msg_length,
             "max_msg_length": self.max_msg_length,
@@ -1379,7 +1450,6 @@ class MainWindow(QMainWindow):
             self.speech_delay = settings.get("speech_delay", self.speech_delay)
             self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
             self.add_accents = settings.get("add_accents", self.add_accents)
-            self.filter_repeats = settings.get("filter_repeats", self.filter_repeats)
             self.read_author_names = settings.get(
                 "read_author_names", self.read_author_names
             )
@@ -1390,6 +1460,7 @@ class MainWindow(QMainWindow):
                 "subscribers_only", self.subscribers_only
             )
             self.toxic_sense = settings.get("toxic_sense", self.toxic_sense)
+            self.ban_limit = settings.get("ban_limit", self.ban_limit)
             self.auto_translate = settings.get("auto_translate", self.auto_translate)
             self.buffer_maxsize = settings.get("buffer_maxsize", self.buffer_maxsize)
             self.min_msg_length = settings.get("min_msg_length", self.min_msg_length)
@@ -1402,9 +1473,29 @@ class MainWindow(QMainWindow):
                 self.twitch_credentials = twitch_default_credentials
 
             self.stop_words = self.load_stop_words(self.voice_language)
+            self.banned_set = self.load_banned_list()
 
         except FileNotFoundError:
             pass  # No settings file, use defaults
+
+    def save_banned_list(self):
+        with open(
+            resource_path(f"spam_filter/banned.txt"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write("\n".join(self.banned_set) + "\n")
+
+    def load_banned_list(self):
+        source_path = resource_path("spam_filter/banned.txt")
+        try:
+            with open(source_path, "r", encoding="utf-8") as file:
+                return set(line.strip() for line in file if line.strip())
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            pass
+        return set()
 
     def load_stop_words(self, lang):
         source_path = resource_path(f"spam_filter/{lang}.txt")
@@ -1412,17 +1503,9 @@ class MainWindow(QMainWindow):
             with open(source_path, "r", encoding="utf-8") as file:
                 return tuple(line.strip() for line in file if line.strip())
         except FileNotFoundError:
-            self.add_sys_message(
-                author="load_stop_words()",
-                text=f"{_(self.language, "File with stop-words not found")}: ({source_path})",
-                status="error",
-            )
+            pass
         except Exception as e:
-            self.add_sys_message(
-                author="load_stop_words()",
-                text=f"{_(self.language, "Failed to read stop-words file")}: {translate_text(str(e), self.language)}",
-                status="error",
-            )
+            pass
         return tuple()
 
     def closeEvent(self, event):
@@ -1541,26 +1624,6 @@ class MainWindow(QMainWindow):
     def get_msg_hash(self, platform, author, message):
         return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()
 
-    def is_spam(self, platform, author, message):
-        """Check for spam"""
-        if self.filter_repeats is False:
-            return False
-
-        message_hash = self.get_msg_hash(platform, author, message)
-
-        if message_hash in self.spam_hash_set:
-            self.messages_stats["spam_count"] += 1
-            return True
-
-        if len(self.spam_hash_queue) == self.spam_hash_queue.maxlen:
-            oldest = self.spam_hash_queue.popleft()
-            self.spam_hash_set.discard(oldest)
-
-        self.spam_hash_queue.append(message_hash)
-        self.spam_hash_set.add(message_hash)
-
-        return False
-
     def contains_stop_words(self, text: str):
         """Check for stop words"""
         text_words = text.split(" ")
@@ -1594,7 +1657,40 @@ class MainWindow(QMainWindow):
         converted_text = re.sub(number_pattern, replace_number, text)
         return converted_text
 
-    def process_chat_message(self, msg_id, platform, author, message, is_member):
+    def process_toxic_message(self, platform, author, is_staff=False, is_owner=False):
+        platform_author = f"{platform}:{author}"
+        self.messages_stats["filtered_count"] += 1
+
+        if is_staff is False and is_owner is False:
+            self.toxic_dict[platform_author] += 1
+            if self.toxic_dict[platform_author] > self.ban_limit:
+                self.add_sys_message(
+                    author=platform,
+                    text=f"[{_(self.language, "Banned")}] {author}",
+                    status="warning",
+                )
+                self.banned_set.add(platform_author)
+                self.save_banned_list()
+
+    def process_chat_message(
+        self,
+        msg_id,
+        platform,
+        author,
+        message,
+        is_sponsor=False,
+        is_staff=False,
+        is_owner=False,
+    ):
+        platform_author = f"{platform}:{author}"
+        if platform_author in self.banned_set:
+            self.add_message(
+                platform=platform,
+                author=author,
+                text=f"[{_(self.language, "Banned")}] {message}",
+                color="gray",
+            )
+            return
         msg_id = str(msg_id)
         if msg_id in self.processed_messages:
             return
@@ -1611,14 +1707,8 @@ class MainWindow(QMainWindow):
                 text=f"[{_(self.language, "Stop words")}] {message}",
                 color="gray",
             )
-            return
-
-        if is_member is False and self.is_spam(platform, author, cleaned_text):
-            self.add_message(
-                platform=platform,
-                author=author,
-                text=f"[{_(self.language, "SPAM")}] {message}",
-                color="gray",
+            self.process_toxic_message(
+                platform=platform, author=author, is_staff=is_staff, is_owner=is_owner
             )
             return
 
@@ -1632,6 +1722,12 @@ class MainWindow(QMainWindow):
                     author=author,
                     text=f"[{_(self.language, str(detox_key).replace("_", " ").capitalize())}] {message}",
                     color="gray",
+                )
+                self.process_toxic_message(
+                    platform=platform,
+                    author=author,
+                    is_staff=is_staff,
+                    is_owner=is_owner,
                 )
                 return
 

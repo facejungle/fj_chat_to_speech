@@ -13,7 +13,9 @@ from pathlib import Path
 import stat
 import tarfile
 
+
 from app.constants import APP_VERSION, APP_NAME
+from app.utils import icon_path, resource_path
 
 MAIN_SCRIPT = "main.py"
 PLATFORM = platform.system()
@@ -25,9 +27,7 @@ elif PLATFORM == "Darwin":
 else:
     FILE_NAME = f"fj_chat_to_speech_{APP_VERSION}_linux"
 
-ICON_PATH = "img/icon.png"
-ICON_PATH_WINDOWS = "img/icon.ico"
-ICON_PATH_MAC = "img/icon.icns"
+ICON_PATH = icon_path()
 
 HIDDEN_IMPORTS = [
     "collections",
@@ -63,76 +63,6 @@ HIDDEN_IMPORTS = [
 ]
 
 EXCLUDES = []
-
-
-def ensure_icons():
-    """Convert PNG to platform-specific formats if needed"""
-    if PLATFORM == "Windows" and not os.path.exists(ICON_PATH_WINDOWS):
-        if os.path.exists(ICON_PATH):
-            try:
-                from PIL import Image
-
-                img = Image.open(ICON_PATH)
-                img.save(
-                    ICON_PATH_WINDOWS,
-                    sizes=[
-                        (16, 16),
-                        (32, 32),
-                        (48, 48),
-                        (64, 64),
-                        (128, 128),
-                        (256, 256),
-                    ],
-                )
-                print(f"[OK] Created Windows icon: {ICON_PATH_WINDOWS}")
-                return ICON_PATH_WINDOWS
-            except Exception as e:
-                print(f"[WARN] Failed to convert Windows icon: {e}")
-
-    elif PLATFORM == "Darwin" and not os.path.exists(ICON_PATH_MAC):
-        if os.path.exists(ICON_PATH):
-            try:
-                # For macOS, we need to create an iconset
-                iconset_dir = "img/icon.iconset"
-                os.makedirs(iconset_dir, exist_ok=True)
-
-                from PIL import Image
-
-                img = Image.open(ICON_PATH)
-
-                # Generate different sizes for macOS
-                sizes = [16, 32, 64, 128, 256, 512, 1024]
-                for size in sizes:
-                    # Regular size
-                    resized = img.resize((size, size), Image.Resampling.LANCZOS)
-                    resized.save(f"{iconset_dir}/icon_{size}x{size}.png")
-
-                    # Retina size (2x)
-                    if size * 2 <= 1024:
-                        resized_2x = img.resize(
-                            (size * 2, size * 2), Image.Resampling.LANCZOS
-                        )
-                        resized_2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
-
-                # Convert iconset to icns
-                subprocess.run(
-                    ["iconutil", "-c", "icns", iconset_dir, "-o", ICON_PATH_MAC],
-                    check=True,
-                )
-
-                # Clean up
-                shutil.rmtree(iconset_dir)
-                print(f"[OK] Created macOS icon: {ICON_PATH_MAC}")
-                return ICON_PATH_MAC
-
-            except Exception as e:
-                print(f"[WARN] Failed to convert macOS icon: {e}")
-
-    if PLATFORM == "Windows" and os.path.exists(ICON_PATH_WINDOWS):
-        return ICON_PATH_WINDOWS
-    elif PLATFORM == "Darwin" and os.path.exists(ICON_PATH_MAC):
-        return ICON_PATH_MAC
-    return ICON_PATH
 
 
 def create_virtual_env():
@@ -177,15 +107,13 @@ def clean_build_dirs():
 
 def create_spec_file():
     """Create single-file PyInstaller spec for all platforms"""
-
-    icon_path = ensure_icons()
-
     data_files = []
 
-    if os.path.exists(icon_path):
-        data_files.append((icon_path, "img"))
+    if os.path.exists(ICON_PATH):
+        data_files.append((ICON_PATH, "img"))
 
     stop_words_files = [
+        ("spam_filter/banned.txt", "spam_filter"),
         ("spam_filter/ru.txt", "spam_filter"),
         ("spam_filter/en.txt", "spam_filter"),
     ]
@@ -239,7 +167,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="{icon_path}",
+    icon="{ICON_PATH}",
 )
 """
 
@@ -261,7 +189,6 @@ def install_dependencies():
 
     venv_path, pip_path, python_path = venv_result
 
-    subprocess.run([pip_path, "install", "pillow"], check=True)
     if PLATFORM == "Darwin":
         subprocess.run(
             [pip_path, "install", "torch==2.8.0", "torchaudio==2.8.0"], check=True
@@ -308,6 +235,7 @@ def build():
         if PLATFORM == "Darwin":
             app_path = f"dist/{FILE_NAME}"
             if os.path.exists(app_path):
+                os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
                 print(f"[OK] Created macOS bundle: {app_path}")
         elif PLATFORM == "Windows":
             exe_path = f"dist/{FILE_NAME}.exe"
@@ -318,9 +246,8 @@ def build():
                 print("[ERR] Binary not found")
                 return False
 
-            create_launcher_script()
-
             os.chmod(exe_path, os.stat(exe_path).st_mode | stat.S_IEXEC)
+            create_launcher_script()
 
             launcher_path = "dist/run_chat_voice.sh"
             archive_path = f"dist/{FILE_NAME}.tar.gz"
@@ -380,10 +307,6 @@ cd "$SCRIPT_DIR"
     with open(launcher_path, "w", encoding="utf-8") as f:
         f.write(launcher)
 
-    # Make executable
-    if os.path.exists(launcher_path):
-        st = os.stat(launcher_path)
-        os.chmod(launcher_path, st.st_mode | stat.S_IEXEC)
     print("[OK] Launcher script created: dist/run_chat_voice.sh")
 
 

@@ -330,10 +330,12 @@ class TwitchChatListener:
 
                     if msg_data:
                         self.on_message(
-                            msg_data["id"],
-                            msg_data["username"],
-                            msg_data["message"],
-                            msg_data["subscriber"],
+                            msg_id=msg_data["id"],
+                            author=msg_data["username"],
+                            msg=msg_data["message"],
+                            is_sponsor=msg_data["subscriber"],  # Sponsor
+                            is_staff=msg_data["vip"],  # Moderator
+                            is_owner=msg_data["mod"],  # Live broadcast owner
                         )
 
                 errors = 0

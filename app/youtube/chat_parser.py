@@ -89,16 +89,13 @@ class YouTubeChatParser:
                     for message in chat.get().sync_items():
                         if message.type == "textMessage":
                             author_details = message.author
-                            is_member = (
-                                author_details.isChatSponsor
-                                or author_details.isChatOwner
-                                or author_details.isChatModerator
-                            )
                             self.on_message(
-                                message.id,
-                                author_details.name,
-                                message.message,
-                                is_member,
+                                msg_id=message.id,
+                                author=author_details.name,
+                                msg=message.message,
+                                is_sponsor=author_details.isChatSponsor,
+                                is_staff=author_details.isChatModerator,
+                                is_owner=author_details.isChatOwner,
                             )
                         errors = 0
 

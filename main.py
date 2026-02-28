@@ -2,6 +2,7 @@ import os
 from random import randint
 import sys
 from collections import defaultdict, deque
+from queue import Empty, Full, Queue
 from datetime import datetime
 import gc
 import json
@@ -45,7 +46,13 @@ import numpy as np
 from googletrans import Translator
 
 from app.schema import MessageStatsTD, TwitchCredentialsTD
-from app.translations import DEFAULT_LANGUAGE, TRANSLATIONS, _, translate_text
+from app.translations import (
+    DEFAULT_LANGUAGE,
+    TRANSLATIONS,
+    _,
+    translate_text,
+    transliteration,
+)
 from app.twitch.auth_worker import AuthWorker
 from app.twitch.chat_listener import TwitchChatListener
 from app.constants import (
@@ -130,14 +137,14 @@ class MainWindow(QMainWindow):
         # Message queue
         self.buffer_maxsize = DEFAULT_BUFFER_SIZE
         self._pending_messages = deque()
+        self._pending_ui_updates = deque()
         self.toxic_dict = defaultdict(int)
         self.banned_set = set()
         self.processed_messages = set()
 
         self.load_settings()
 
-        self.message_buffer = deque(maxlen=self.buffer_maxsize)
-        self.audio_queue = deque(maxlen=self.buffer_maxsize)
+        self.audio_queue = Queue(maxsize=self.buffer_maxsize)
 
         self.setup_ui()
 
@@ -155,7 +162,7 @@ class MainWindow(QMainWindow):
         if self.toxic_sense < 1.0:
             threading.Thread(target=self.init_detoxify, daemon=True).start()
         threading.Thread(target=self.process_audio_loop, daemon=True).start()
-        threading.Thread(target=self.process_msg_buffer_loop, daemon=True).start()
+        # threading.Thread(target=self.process_msg_buffer_loop, daemon=True).start()
 
     # === UI setup ===
 
@@ -325,13 +332,13 @@ class MainWindow(QMainWindow):
     def setup_central_widget(self):
         chat_header_layout = QHBoxLayout()
         chat_header_layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
-        self.chat_header_label = QLabel(_(self.language, "Message Log"))
-        self.chat_header_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        chat_header_layout.addWidget(self.chat_header_label, 1)
+        # self.chat_header_label = QLabel(_(self.language, "Message Log"))
+        # self.chat_header_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        # chat_header_layout.addWidget(self.chat_header_label, 1)
 
         control_layout = QHBoxLayout()
-        chat_header_layout.addLayout(control_layout)
-        control_layout.setContentsMargins(PADDING, 0, PADDING, 0)
+        chat_header_layout.addLayout(control_layout, 1)
+        control_layout.setContentsMargins(0, 0, PADDING, 0)
         self.audio_indicator = QLabel("🟢")
         control_layout.addWidget(self.audio_indicator)
         self.pause_button = QPushButton(
@@ -519,7 +526,7 @@ class MainWindow(QMainWindow):
         )
         self.configure_twitch_button.setText(_(self.language, "Configure"))
 
-        self.chat_header_label.setText(_(self.language, "Message Log"))
+        # self.chat_header_label.setText(_(self.language, "Message Log"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
         self.pause_button.setText(
@@ -1196,14 +1203,23 @@ class MainWindow(QMainWindow):
     def on_change_queue_depth(self, value):
         self.buffer_maxsize = value
         self.queue_depth_label_value.setText(str(self.buffer_maxsize))
-        self.message_buffer = deque(maxlen=self.buffer_maxsize)
-        self.audio_queue = deque(maxlen=self.buffer_maxsize)
+        old_queue = self.audio_queue
+        self.audio_queue = Queue(maxsize=self.buffer_maxsize)
+        while True:
+            try:
+                self.audio_queue.put_nowait(old_queue.get_nowait())
+            except (Empty, Full):
+                break
 
     def on_change_stats(self):
         self.stats_label.setText(self.stats_text())
 
     def on_clear_queue(self):
-        self.audio_queue.clear()
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+            except Empty:
+                break
         self.on_change_stats()
         self.statusBar().showMessage(_(self.language, "Queue cleared"), 3000)
 
@@ -1284,7 +1300,7 @@ class MainWindow(QMainWindow):
             f"{_(self.language, 'Messages')}: {self.messages_stats['messages_count']} | "
             f"{_(self.language, 'Spoken')}: {self.messages_stats['spoken_count']} | "
             f"{_(self.language, 'Filtered')}: {self.messages_stats['filtered_count']} | "
-            f"{_(self.language, 'In queue')}: {len(self.audio_queue)}"
+            f"{_(self.language, 'In queue')}: {self.audio_queue.qsize()}"
         )
 
     def status_voice_text(self):
@@ -1331,6 +1347,15 @@ class MainWindow(QMainWindow):
         while len(self._pending_messages) > 0:
             platform, author, text, color, background = self._pending_messages.popleft()
             self._insert_message(platform, author, text, color, background)
+        while len(self._pending_ui_updates) > 0:
+            indicator_text = self._pending_ui_updates.popleft()
+            self.audio_indicator.setText(indicator_text)
+
+    def _set_audio_indicator(self, indicator_text):
+        if threading.current_thread() is threading.main_thread():
+            self.audio_indicator.setText(indicator_text)
+            return
+        self._pending_ui_updates.append(indicator_text)
 
     def _insert_message(self, platform, author, text, color=None, background=None):
         time_str = datetime.now().strftime("%H:%M:%S")
@@ -1603,7 +1628,6 @@ class MainWindow(QMainWindow):
                 text=_(self.language, "silero_loaded"),
                 status="success",
             )
-            # self.speak(_(self.voice_language, "silero_loaded"))
 
         except Exception as e:
             self.add_sys_message(
@@ -1657,8 +1681,22 @@ class MainWindow(QMainWindow):
         converted_text = re.sub(number_pattern, replace_number, text)
         return converted_text
 
-    def process_toxic_message(self, platform, author, is_staff=False, is_owner=False):
+    def process_toxic_message(
+        self,
+        platform: str,
+        author: str,
+        message: str,
+        reason: str,
+        is_staff=False,
+        is_owner=False,
+    ):
         platform_author = f"{platform}:{author}"
+        self.add_message(
+            platform=platform,
+            author=author,
+            text=f"[{_(self.language, reason)}] {message}",
+            color="gray",
+        )
         self.messages_stats["filtered_count"] += 1
         self.on_change_stats()
 
@@ -1683,12 +1721,17 @@ class MainWindow(QMainWindow):
         is_staff=False,
         is_owner=False,
     ):
-        platform_author = f"{platform}:{author}"
+        cleaned_author = clean_message(author, self.language)
+        platform_author = f"{platform}:{cleaned_author}"
+        cleaned_text = clean_message(message, self.language)
+        if not cleaned_text:
+            return
+
         if platform_author in self.banned_set:
             self.add_message(
                 platform=platform,
-                author=author,
-                text=f"[{_(self.language, "Banned")}] {message}",
+                author=cleaned_author,
+                text=f"[{_(self.language, "Banned")}] {cleaned_text}",
                 color="gray",
             )
             return
@@ -1697,19 +1740,14 @@ class MainWindow(QMainWindow):
             return
         self.processed_messages.add(msg_id)
 
-        cleaned_text = clean_message(message, self.language)
-        if not cleaned_text:
-            return
-
         if self.contains_stop_words(cleaned_text):
-            self.add_message(
-                platform=platform,
-                author=author,
-                text=f"[{_(self.language, "Stop words")}] {message}",
-                color="gray",
-            )
             self.process_toxic_message(
-                platform=platform, author=author, is_staff=is_staff, is_owner=is_owner
+                platform=platform,
+                author=cleaned_author,
+                message=cleaned_text,
+                reason="Stop words",
+                is_staff=is_staff,
+                is_owner=is_owner,
             )
             return
 
@@ -1718,15 +1756,11 @@ class MainWindow(QMainWindow):
             detox_key = max(sentiment, key=sentiment.get)
             detox_value = sentiment[detox_key]
             if detox_value > self.toxic_sense:
-                self.add_message(
-                    platform=platform,
-                    author=author,
-                    text=f"[{_(self.language, str(detox_key).replace("_", " ").capitalize())}] {message}",
-                    color="gray",
-                )
                 self.process_toxic_message(
                     platform=platform,
-                    author=author,
+                    author=cleaned_author,
+                    message=clean_message,
+                    reason=str(detox_key).replace("_", " ").capitalize(),
                     is_staff=is_staff,
                     is_owner=is_owner,
                 )
@@ -1738,22 +1772,23 @@ class MainWindow(QMainWindow):
             if not cleaned_text:
                 return
 
-        self.add_message(platform=platform, author=author, text=cleaned_text)
+        self.add_message(platform=platform, author=cleaned_author, text=cleaned_text)
 
         if len(cleaned_text) < self.min_msg_length:
             return
         if len(cleaned_text) > self.max_msg_length:
             cleaned_text = cleaned_text[: self.max_msg_length] + "..."
 
+        cleaned_author = self.convert_numbers_to_words(cleaned_author)
         cleaned_text = self.convert_numbers_to_words(cleaned_text)
 
         if self.read_author_names:
-            cleaned_text = f"{author} {_(self.voice_language, 'said')} - {cleaned_text}"
+            cleaned_text = f"{transliteration(cleaned_author, self.voice_language)} {_(self.voice_language, 'said')} - {cleaned_text}"
 
         if self.read_platform_names:
             cleaned_text = f"{_(self.voice_language, "Message from")} {_(self.voice_language, str(platform).lower())}: {cleaned_text}"
 
-        self.message_buffer.append(cleaned_text)
+        self.speak(cleaned_text)
 
     # == Audio processing ==
 
@@ -1815,11 +1850,13 @@ class MainWindow(QMainWindow):
         try:
             audio = self.text_to_speech(text)
             if audio is None:
-                return
+                return False
             audio_numpy = self.postprocess_audio(audio)
             if len(audio_numpy) > 0:
-                self.audio_queue.append(audio_numpy)
+                self.audio_queue.put(audio_numpy, timeout=2.0)
                 return True
+            return False
+        except Full:
             return False
         except Exception as e:
             self.add_sys_message(
@@ -1827,10 +1864,11 @@ class MainWindow(QMainWindow):
                 text=f"{_(self.language, "Audio playback error")}. {translate_text(str(e), self.language)}",
                 status="error",
             )
+            return False
 
     def play_audio(self, audio_to_play):
         try:
-            self.audio_indicator.setText("🔴")
+            self._set_audio_indicator("🔴")
             sd.play(audio_to_play)
             sd.wait()
         except Exception as e:
@@ -1840,21 +1878,30 @@ class MainWindow(QMainWindow):
                 status="error",
             )
         finally:
-            self.audio_indicator.setText("🟢")
+            self._set_audio_indicator("🟢")
 
     def process_audio_loop(self):
         """Main loop to process audio queue"""
         while True:
+            played_message = False
             try:
-                if len(self.audio_queue) > 0 and self.is_paused is False:
-                    audio_data = self.audio_queue.popleft()
-                    self.play_audio(audio_data)
+                if self.is_paused:
+                    sleep(0.1)
+                    continue
 
-                    del audio_data
-                    gc.collect()
+                try:
+                    audio_data = self.audio_queue.get(timeout=0.2)
+                except Empty:
+                    continue
 
-                    self.messages_stats["spoken_count"] += 1
-                    self.on_change_stats()
+                self.play_audio(audio_data)
+                played_message = True
+
+                del audio_data
+                gc.collect()
+
+                self.messages_stats["spoken_count"] += 1
+                self.on_change_stats()
 
             except Exception as e:
                 self.add_sys_message(
@@ -1862,27 +1909,8 @@ class MainWindow(QMainWindow):
                     text=f"{_(self.language, "Audio queue error")}. {translate_text(str(e), self.language)}",
                     status="error",
                 )
-            finally:
+            if played_message:
                 sleep(self.speech_delay)
-
-            sleep(0.1)
-
-    # == Audio processing ==
-
-    def process_msg_buffer_loop(self):
-        while True:
-            try:
-                if len(self.message_buffer) > 0:
-                    text = self.message_buffer.popleft()
-                    self.speak(text)
-            except Exception as e:
-                self.add_sys_message(
-                    author="process_msg_buffer_loop()",
-                    text=f"{_(self.language, "Error process message buffer")}. {translate_text(str(e), self.language)}",
-                    status="error",
-                )
-            finally:
-                sleep(0.2)
 
 
 def main():

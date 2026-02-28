@@ -4,38 +4,21 @@
 
 FJ Chat to Speech is an open-source desktop application that converts live chat messages from YouTube and Twitch streams into real-time speech.
 
-## <a href="https://github.com/facejungle/fj_chat_to_speech/releases/latest/" target="_blank">Download</a>
-
-The application combines:
-
-- YouTube and Twitch chat integration
-- `Silero` text-to-speech models (local inference)
-- `Detoxify` toxicity filtering (local inference)
-- Custom spam filtering tools
-
-## Key Features
-
-- Voice selection (English and Russian)
-- Adjustable speech volume
-- Adjustable speech speed
-- Pronunciation of numbers
-- Optional translation of messages before speech
+- YouTube and Twitch live chat support
+- Local text-to-speech with `Silero`
+- Local toxicity filtering with `Detoxify`
+- English and Russian voices
+- Adjustable speech speed and volume
+- Number pronunciation support
+- Optional message translation before speech
 - Stop-word list editor
-- Toxicity filtering (Detoxify)
-- English and Russian interface
+- Spam filters (symbol spam, links)
+- English and Russian UI
 - Free and open-source
 
-### YouTube Streams
+## <a href="https://github.com/facejungle/fj_chat_to_speech/releases/latest/" target="_blank">Download</a>
 
-To connect to a broadcast, simply paste the link to the active live broadcast and click "Connect"
-
-### Twitch Streams
-
-For Twitch, simply enter the channel name (or URL) of an active stream. FJ Chat to Speech will connect to Twitch’s chat service using your Client ID and start reading incoming chat messages. (Beforehand, you must register a Twitch app and copy the Client ID from the Twitch Developer Console into the program.) The interface will handle reconnects if the stream goes offline and comes back.
-
-- <a href="https://github.com/facejungle/fj_chat_to_speech/wiki/Twitch-CLIENT-ID" target="_blank">How to create Client ID</a>
-
-## Launch from source code
+## Run from source
 
 ```bash
 git clone https://github.com/facejungle/fj_chat_to_speech.git
@@ -47,6 +30,39 @@ pip install -r requirements.txt
 python main.py
 ```
 
+Notes:
+
+- On first run, model-related files downloaded and cached.
+- The settings file is located in:
+  - Windows: `~\AppData\Roaming\FJ Chat to Speech`
+  - Linux or MacOS: `~/.fj_chat_to_speech`
+
+## Connect to YouTube
+
+1. Paste a live stream URL (or video ID) into the YouTube field.
+2. Click `Connect`.
+
+## Connect to Twitch
+
+1. Create a Twitch application and copy its `Client ID`.
+   - <a href="https://github.com/facejungle/fj_chat_to_speech/wiki/Twitch-CLIENT-ID" target="_blank">How to create Client ID</a>
+2. Open Twitch configure in the app paste your `Client ID` and click `Save`.
+3. Confirm authorization in your browser (Device Code flow).
+4. Enter an active channel name or Twitch URL.
+5. Click `Connect`.
+
+The app stores access/refresh tokens in local settings and refreshes access tokens automatically when needed.
+
+## Troubleshooting
+
+- Twitch connection fails:
+  - Confirm the `Client ID` is valid.
+  - Re-run Twitch authorization in app settings.
+  - Ensure the channel is live and the name/URL is correct.
+- YouTube connection fails:
+  - Check that the stream is currently live.
+  - Try pasting a direct video URL instead of a shortened link.
+
 ## Build
 
 ```bash
@@ -54,11 +70,11 @@ git clone https://github.com/facejungle/fj_chat_to_speech.git
 cd fj_chat_to_speech
 
 python build.py
-cd dist
-ls
 ```
+
+Build artifacts are created in `dist/`.
 
 ## Thanks for <a href="https://github.com/snakers4/silero-models/" target="_blank">Silero</a> and <a href="https://github.com/unitaryai/detoxify" target="_blank">Detoxify</a>
 
-- **Silero Models**: We use Silero’s open-source TTS models, known for natural-sounding voices and fast CPU performance
+- **Silero**: We use Silero’s open-source TTS models, known for natural-sounding voices and fast CPU performance
 - **Detoxify**: Toxicity filtering is powered by the Detoxify library, which provides pretrained models to flag and filter toxic comments

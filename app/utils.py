@@ -185,6 +185,59 @@ def clear_detoxify_checkpoint_cache(model_type="multilingual"):
             pass
 
 
+def clean_symbol_spam(text: str):
+    """Drop tokens that look like repetitive gibberish spam."""
+    token = str(text or "").strip()
+    if len(token) < 6:
+        return text
+    # spam_replacement = "".join(dict.fromkeys(token)) + "..."
+
+    lowered = token.lower()
+    alpha = re.sub(r"[^a-zа-яё]", "", lowered)
+    digits = re.sub(r"\D", "", lowered)
+    alnum = re.sub(r"[^a-zа-яё0-9]", "", lowered)
+
+    def _has_strong_periodic_pattern(s: str, min_len: int) -> bool:
+        if len(s) < min_len:
+            return False
+        # Catch patterns like "adadadada...", "zxczxczxc...", "123123123..."
+        for period in range(1, min(8, len(s) // 2 + 1)):
+            block = s[:period]
+            repeats = len(s) // period
+            if repeats < 4:
+                continue
+            if block * repeats == s[: repeats * period]:
+                tail = s[repeats * period :]
+                # Allow a short noisy tail: still spam if most of token is periodic.
+                if len(tail) <= max(2, period):
+                    return True
+                if len(block * repeats) / len(s) >= 0.85:
+                    return True
+        return False
+
+    if alpha:
+        if re.search(r"(.)\1{4,}", alpha):
+            return f"{token[:3]}..."
+        if re.search(r"([a-zа-яё]{1,4})\1{4,}", alpha):
+            return ""
+        if _has_strong_periodic_pattern(alpha, min_len=10):
+            return ""
+        unique_ratio = len(set(alpha)) / len(alpha)
+        if len(alpha) >= 14 and unique_ratio < 0.34:
+            return ""
+
+    if digits:
+        if re.search(r"(\d{1,6})\1{3,}", digits):
+            return ""
+        if _has_strong_periodic_pattern(digits, min_len=10):
+            return ""
+
+    if alnum and _has_strong_periodic_pattern(alnum, min_len=12):
+        return ""
+
+    return text
+
+
 def clean_message(text, ui_lang):
     """Clean message from garbage"""
 
@@ -219,7 +272,16 @@ def clean_message(text, ui_lang):
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
 
-    return text
+    text_arr = []
+    for word in text.split(" "):
+        cleaned_text = clean_symbol_spam(word)
+        if cleaned_text:
+            text_arr.append(cleaned_text)
+    return " ".join(text_arr)
+
+
+def transliteration(text: str, lang: str):
+    pass
 
 
 @lru_cache

@@ -1,5 +1,5 @@
 import re
-from threading import Thread
+from threading import Thread, current_thread, main_thread
 from time import sleep
 import httpx
 import pytchat
@@ -69,60 +69,79 @@ class YouTubeChatParser:
         self.lang = lang
 
         self.is_connected = False
-        self.chat_id = None
-        self.video_id = None
+        self.video_id = self._parse_video_id(self.url)
 
-    def _connect(self):
-        delay = 0.5
+    def _stop_chat(self, chat):
+        if not chat:
+            return
+        terminate = getattr(chat, "terminate", None)
+        if callable(terminate):
+            try:
+                terminate()
+            except Exception:
+                pass
+
+    def _create_chat(self, video_id: str):
+        use_interruptable = current_thread() is main_thread()
+        return pytchat.create(video_id=video_id, interruptable=use_interruptable)
+
+    def _stream_chat(self, chat) -> bool:
         errors = 0
 
-        try:
-            video_id = self._parse_video_id(self.url)
-            chat = pytchat.create(video_id=video_id, interruptable=False)
+        while chat.is_alive() and self.is_connected:
+            try:
+                data = chat.get()
+                for message in data.sync_items():
+                    if message.type == "textMessage":
+                        author_details = message.author
+                        self.on_message(
+                            msg_id=message.id,
+                            author=author_details.name,
+                            msg=message.message,
+                            is_sponsor=author_details.isChatSponsor,
+                            is_staff=author_details.isChatModerator,
+                            is_owner=author_details.isChatOwner,
+                        )
 
-            if chat.is_alive():
-                self.is_connected = True
-                self.on_connect()
-            while chat.is_alive() and self.is_connected:
-                try:
-                    for message in chat.get().sync_items():
-                        if message.type == "textMessage":
-                            author_details = message.author
-                            self.on_message(
-                                msg_id=message.id,
-                                author=author_details.name,
-                                msg=message.message,
-                                is_sponsor=author_details.isChatSponsor,
-                                is_staff=author_details.isChatModerator,
-                                is_owner=author_details.isChatOwner,
-                            )
-                        errors = 0
+                raise_for_status = getattr(chat, "raise_for_status", None)
+                if callable(raise_for_status):
+                    raise_for_status()
 
-                except Exception as e:
-                    self.on_error(
-                        f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}"
-                    )
-                    errors += 1
-
+                errors = 0
+            except Exception as e:
+                errors += 1
+                self.on_error(
+                    f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}"
+                )
+                sleep(min(errors, 5))
                 if errors >= 5:
-                    self.disconnect()
-                    return
+                    break
 
-                sleep(delay * max(1, errors))
-            else:
-                self.is_connected = False
+    def _connect(self):
+        chat = None
+        self.is_connected = True
+        try:
+            chat = self._create_chat(self.video_id)
+            if not chat.is_alive():
+                self.on_error(_(self.lang, "connection_failed"))
+                return
+
+            self.on_connect()
+            self._stream_chat(chat)
 
         except Exception as e:
             self.on_error(
                 f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
             )
+
         finally:
+            self._stop_chat(chat)
             self.disconnect()
 
     def disconnect(self):
         if self.is_connected:
-            self.is_connected = False
             self.on_disconnect()
+        self.is_connected = False
 
     def run(self):
         th = Thread(target=self._connect, daemon=True)

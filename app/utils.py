@@ -5,11 +5,30 @@ import os
 import platform
 import re
 import sys
+import importlib
 
-from torch import hub
 
 from app.constants import APP_NAME
 from app.translations import _
+
+_torch_hub = None
+_torch_hub_error = None
+
+
+def _get_torch_hub():
+    global _torch_hub, _torch_hub_error
+    if _torch_hub is not None:
+        return _torch_hub
+    if _torch_hub_error is not None:
+        raise _torch_hub_error
+
+    try:
+        torch_module = importlib.import_module("torch")
+        _torch_hub = torch_module.hub
+        return _torch_hub
+    except Exception as e:
+        _torch_hub_error = e
+        raise
 
 
 class _NullStream:
@@ -80,10 +99,12 @@ def configure_torch_hub_cache():
     os.environ.setdefault("XDG_CACHE_HOME", cache_root)
     os.environ.setdefault("TORCH_HOME", torch_home)
     os.makedirs(torch_hub_dir, exist_ok=True)
+    hub = _get_torch_hub()
     hub.set_dir(torch_hub_dir)
 
 
 def find_cached_silero_repo():
+    hub = _get_torch_hub()
     hub_dir = hub.get_dir()
     if not os.path.isdir(hub_dir):
         return None
@@ -117,6 +138,7 @@ def prefer_cached_silero_package(repo_path):
 
 
 def find_cached_detoxify_checkpoint(model_type="multilingual"):
+    hub = _get_torch_hub()
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
@@ -152,6 +174,7 @@ def find_cached_detoxify_checkpoint(model_type="multilingual"):
 
 
 def clear_detoxify_checkpoint_cache(model_type="multilingual"):
+    hub = _get_torch_hub()
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):

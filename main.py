@@ -1,3 +1,4 @@
+from logging import Logger
 import os
 from random import randint
 import sys
@@ -9,13 +10,12 @@ import json
 import html
 import re
 import threading
+import importlib
 from time import sleep
 import hashlib
 
-from detoxify import Detoxify
 from num2words import num2words
 import sounddevice as sd
-from torch import hub, no_grad, set_grad_enabled, set_num_threads
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -32,22 +32,27 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QLineEdit,
     QCheckBox,
-    QTextEdit,
+    QListView,
     QFileDialog,
     QMenu,
     QPlainTextEdit,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QTimer, QFile, QIODevice
-from PyQt6.QtGui import QFont, QAction, QPalette, QTextCursor, QIcon
+from PyQt6.QtCore import (
+    Qt,
+    QTimer,
+    QFile,
+    QIODevice,
+)
+from PyQt6.QtGui import QFont, QAction, QPalette, QIcon
 from PyQt6.QtGui import QShortcut, QKeySequence
 from scipy.signal import resample
 import numpy as np
 from googletrans import Translator
 
+from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 from app.schema import MessageStatsTD, TwitchCredentialsTD
 from app.translations import (
-    DEFAULT_LANGUAGE,
     TRANSLATIONS,
     _,
     translate_text,
@@ -58,8 +63,8 @@ from app.twitch.chat_listener import TwitchChatListener
 from app.constants import (
     APP_VERSION,
     APP_NAME,
+    DEFAULTS,
     PADDING,
-    DEFAULT_BUFFER_SIZE,
     VOICES,
     MODELS,
 )
@@ -88,6 +93,44 @@ window_flag_fixed = (
 twitch_default_credentials = TwitchCredentialsTD(
     client_id=None, access=None, refresh=None, nickname=None
 )
+_torch_module = None
+_torch_import_error = None
+_detoxify_class = None
+_detoxify_import_error = None
+
+
+def _get_torch():
+    global _torch_module, _torch_import_error
+    if _torch_module is not None:
+        return _torch_module
+    if _torch_import_error is not None:
+        raise _torch_import_error
+
+    try:
+        _torch_module = importlib.import_module("torch")
+        return _torch_module
+    except Exception as e:
+        _torch_import_error = e
+        raise
+
+
+def _get_detoxify_class():
+    global _detoxify_class, _detoxify_import_error
+    if _detoxify_class is not None:
+        return _detoxify_class
+    if _detoxify_import_error is not None:
+        raise _detoxify_import_error
+
+    try:
+        detoxify_module = importlib.import_module("detoxify")
+        _detoxify_class = detoxify_module.Detoxify
+        return _detoxify_class
+    except Exception as e:
+        _detoxify_import_error = e
+        raise
+
+
+logger = Logger("main")
 
 
 class MainWindow(QMainWindow):
@@ -102,26 +145,29 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.root_widget)
         self.root_layout = QVBoxLayout(self.root_widget)
 
-        self.language = DEFAULT_LANGUAGE
-        self.voice_language = DEFAULT_LANGUAGE
-        self.voice = "random"
-        self.volume = 100
-        self.speech_rate = 1.00
-        self.speech_delay = 1.5
-        self.is_paused = False
-        self.min_msg_length = 2
-        self.max_msg_length = 200
-        self.toxic_sense = 0.6
-        self.ban_limit = 5
+        self.language = DEFAULTS["language"]
+        self.voice_language = DEFAULTS["voice_language"]
+        self.voice = DEFAULTS["voice"]
 
-        self.auto_scroll = True
-        self.add_accents = True
-        self.read_author_names = False
-        self.read_platform_names = False
-        self.subscribers_only = False
-        self.auto_translate = False
+        self.auto_scroll = DEFAULTS["auto_scroll"]
+        self.add_accents = DEFAULTS["add_accents"]
+        self.read_author_names = DEFAULTS["read_author_names"]
+        self.read_platform_names = DEFAULTS["read_platform_names"]
+        self.subscribers_only = DEFAULTS["subscribers_only"]
+        self.auto_translate = DEFAULTS["auto_translate"]
+
+        self.volume = DEFAULTS["volume"]
+        self.speech_rate = DEFAULTS["speech_rate"]
+        self.speech_delay = DEFAULTS["speech_delay"]
+        self.min_msg_length = DEFAULTS["min_msg_length"]
+        self.max_msg_length = DEFAULTS["max_msg_length"]
+        self.toxic_sense = DEFAULTS["toxic_sense"]
+        self.ban_limit = DEFAULTS["ban_limit"]
+
         self.stop_words = tuple()
         self.chat_only_mode = False
+        self.is_paused = False
+        self._playback_abort_requested = False
 
         # Connections
         self.youtube = None
@@ -135,10 +181,10 @@ class MainWindow(QMainWindow):
         self.messages_stats: MessageStatsTD = defaultdict(int)
 
         # Message queue
-        self.buffer_maxsize = DEFAULT_BUFFER_SIZE
+        self.buffer_maxsize = DEFAULTS["buffer_maxsize"]
         self._pending_messages = deque()
         self._pending_ui_updates = deque()
-        self.toxic_dict = defaultdict(int)
+        self.toxic_dict = defaultdict(float)
         self.banned_set = set()
         self.processed_messages = set()
 
@@ -154,9 +200,13 @@ class MainWindow(QMainWindow):
         self.translator = Translator()
         self.translator_lock = threading.Lock()
 
-        configure_torch_hub_cache()
-        set_num_threads(2)
-        set_grad_enabled(False)
+        self._background_services_started = False
+        QTimer.singleShot(0, self.start_background_services)
+
+    def start_background_services(self):
+        if self._background_services_started:
+            return
+        self._background_services_started = True
 
         threading.Thread(target=self.init_silero, daemon=True).start()
         if self.toxic_sense < 1.0:
@@ -372,10 +422,20 @@ class MainWindow(QMainWindow):
         self.chat_header_widget.setLayout(chat_header_layout)
         self.root_layout.addWidget(self.chat_header_widget)
 
-        # Chat log (rich text for messenger-like messages)
-        self.chat_text = QTextEdit()
-        self.chat_text.setReadOnly(True)
-        self.chat_text.setAcceptRichText(True)
+        self.chat_text = QListView()
+        self.chat_text.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
+        self.chat_text.setSelectionMode(QListView.SelectionMode.NoSelection)
+        self.chat_text.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.chat_text.setWordWrap(True)
+        self.chat_text.setUniformItemSizes(False)
+        self.chat_text.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.chat_text.setSpacing(4)
+        self.chat_model = ChatMessageListModel(self.chat_text)
+        self.chat_delegate = ChatMessageDelegate(self.chat_text)
+        self.chat_text.setModel(self.chat_model)
+        self.chat_text.setItemDelegate(self.chat_delegate)
         self.root_layout.addWidget(self.chat_text)
 
         # Timer to flush messages added from background threads
@@ -498,11 +558,12 @@ class MainWindow(QMainWindow):
         )
         self.setup_pause_button_color()
         if self.is_paused:
-            sd.stop()
+            self._playback_abort_requested = True
             self.statusBar().showMessage(
                 _(self.language, "Playback has been stopped"), 3000
             )
         else:
+            self._playback_abort_requested = False
             self.statusBar().showMessage(
                 _(self.language, "Speech playback continued..."), 3000
             )
@@ -560,6 +621,7 @@ class MainWindow(QMainWindow):
         font = self.chat_text.font()
         font.setPointSize(font_size)
         self.chat_text.setFont(font)
+        self.chat_text.doItemsLayout()
 
     def on_configure_twitch(self):
         if getattr(self, "dlg", False) and self.dlg:
@@ -705,84 +767,82 @@ class MainWindow(QMainWindow):
         self.twitch_client_id_button.setText(_(self.language, "Save"))
 
     def on_click_connect_twitch(self):
-        self.connect_twitch_button.setEnabled(False)
-        try:
-            if self.twitch:
-
-                def _stop_twitch_async():
-                    self.twitch.stop()
-                    self.twitch = None
-
-                threading.Thread(target=_stop_twitch_async, daemon=True).start()
-            else:
-                video_id = self.twitch_input.text()
-                if not video_id:
-                    QMessageBox.warning(
-                        self,
-                        "URL / ID",
-                        _(self.language, "Please enter video ID or URL"),
-                    )
-                    return
-
-                if (
-                    self.twitch_credentials["client_id"] is None
-                    or self.twitch_credentials["access"] is None
-                ):
-                    self.on_configure_twitch()
-                    return
-
-                def on_expiries_access():
-                    access, refresh = AuthWorker.refresh_access_token(
-                        self.twitch_credentials["client_id"],
-                        self.twitch_credentials["refresh"],
-                        self.language,
-                    )
-                    self.twitch_credentials["access"] = access
-                    self.twitch_credentials["refresh"] = refresh
-                    return access
-
-                def on_msg(
-                    msg_id,
-                    author,
-                    msg,
-                    is_sponsor=False,
-                    is_staff=False,
-                    is_owner=False,
-                ):
-                    if self.subscribers_only and is_sponsor is False:
-                        return
-                    self.process_chat_message(
-                        msg_id=msg_id,
-                        platform="Twitch",
-                        author=author,
-                        message=msg,
-                        is_sponsor=is_sponsor,
-                        is_staff=is_staff,
-                        is_owner=is_owner,
-                    )
-
-                def on_error(err):
-                    self.add_sys_message(author="Twitch", text=err, status="error")
-
-                self.twitch = TwitchChatListener(
-                    client_id=self.twitch_credentials["client_id"],
-                    token=self.twitch_credentials["access"],
-                    nickname=self.twitch_credentials["nickname"],
-                    channel=video_id,
-                    on_connect=self.on_connect_twitch,
-                    on_disconnect=self.on_disconnect_twitch,
-                    on_error=on_error,
-                    on_message=on_msg,
-                    on_expiries_access=on_expiries_access,
-                    lang=self.language,
+        if self.twitch:
+            self.twitch.disconnect()
+            self.twitch = None
+        else:
+            video_id = self.twitch_input.text()
+            if not video_id:
+                QMessageBox.warning(
+                    self,
+                    "URL / ID",
+                    _(self.language, "Please enter video ID or URL"),
                 )
-                threading.Thread(target=self.twitch.run).start()
-        finally:
-            self.connect_twitch_button.setEnabled(True)
+                return
+
+            if (
+                self.twitch_credentials["client_id"] is None
+                or self.twitch_credentials["access"] is None
+            ):
+                self.on_configure_twitch()
+                return
+
+            def on_expiries_access():
+                access, refresh = AuthWorker.refresh_access_token(
+                    self.twitch_credentials["client_id"],
+                    self.twitch_credentials["refresh"],
+                    self.language,
+                )
+                self.twitch_credentials["access"] = access
+                self.twitch_credentials["refresh"] = refresh
+                return access
+
+            def on_msg(
+                msg_id,
+                author,
+                msg,
+                is_sponsor=False,
+                is_staff=False,
+                is_owner=False,
+            ):
+                if self.subscribers_only and is_sponsor is False:
+                    return
+                self.process_chat_message(
+                    msg_id=msg_id,
+                    platform="Twitch",
+                    author=author,
+                    message=msg,
+                    is_sponsor=is_sponsor,
+                    is_staff=is_staff,
+                    is_owner=is_owner,
+                )
+
+            def on_error(err):
+                self.add_sys_message(author="Twitch", text=err, status="error")
+
+            self.twitch_input.setReadOnly(True)
+            self.connect_twitch_button.setEnabled(False)
+            self.connect_twitch_button.setText(_(self.language, "Connecting"))
+
+            self.twitch = TwitchChatListener(
+                client_id=self.twitch_credentials["client_id"],
+                token=self.twitch_credentials["access"],
+                nickname=self.twitch_credentials["nickname"],
+                channel=video_id,
+                on_connect=self.on_connect_twitch,
+                on_disconnect=self.on_disconnect_twitch,
+                on_error=on_error,
+                on_message=on_msg,
+                on_expiries_access=on_expiries_access,
+                lang=self.language,
+            )
+            self.twitch.run()
 
     def on_disconnect_twitch(self):
+        self.twitch = None
         self.twitch_is_connected = False
         self.twitch_input.setReadOnly(False)
+        self.connect_twitch_button.setEnabled(True)
 
         self.connect_twitch_button.setText(_(self.language, "Connect"))
         self.connect_twitch_button.setPalette(self.style().standardPalette())
@@ -794,7 +854,7 @@ class MainWindow(QMainWindow):
 
     def on_connect_twitch(self):
         self.twitch_is_connected = True
-        self.twitch_input.setReadOnly(True)
+        self.connect_twitch_button.setEnabled(True)
 
         self.connect_twitch_button.setText(_(self.language, "Connected"))
         palette = self.connect_twitch_button.palette()
@@ -848,73 +908,73 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def on_click_yt_connect(self):
-        self.connect_yt_button.setEnabled(False)
-        try:
-            if self.youtube:
-                self.youtube.disconnect()
-                self.youtube = None
-            else:
-                video_id = self.yt_video_input.text()
-                if not video_id:
-                    QMessageBox.warning(
-                        self,
-                        "URL / ID",
-                        _(self.language, "Please enter video ID or URL"),
-                    )
+        if self.youtube:
+            self.youtube.disconnect()
+            self.youtube = None
+        else:
+            video_id = self.yt_video_input.text()
+            if not video_id:
+                QMessageBox.warning(
+                    self,
+                    "URL / ID",
+                    _(self.language, "Please enter video ID or URL"),
+                )
+                return
+
+            # if self.yt_credentials is None:
+            #     self.on_configure_yt()
+            #     return
+
+            if not self.model:
+                res = QMessageBox.question(
+                    self,
+                    _(self.language, "Silero not loaded"),
+                    _(self.language, "note_tts_not_loaded"),
+                )
+                if res != QMessageBox.StandardButton.Yes:
                     return
 
-                # if self.yt_credentials is None:
-                #     self.on_configure_yt()
-                #     return
-
-                if not self.model:
-                    res = QMessageBox.question(
-                        self,
-                        _(self.language, "Silero not loaded"),
-                        _(self.language, "note_tts_not_loaded"),
-                    )
-                    if res != QMessageBox.StandardButton.Yes:
-                        return
-
-                def on_msg(
-                    msg_id,
-                    author,
-                    msg,
-                    is_sponsor=False,
-                    is_staff=False,
-                    is_owner=False,
-                ):
-                    if self.subscribers_only and is_sponsor is False:
-                        return
-                    self.process_chat_message(
-                        msg_id=msg_id,
-                        platform="YouTube",
-                        author=author,
-                        message=msg,
-                        is_sponsor=is_sponsor,
-                        is_staff=is_staff,
-                        is_owner=is_owner,
-                    )
-
-                def on_error(err):
-                    self.add_sys_message(author="YouTube", text=err, status="error")
-
-                self.youtube = YouTubeChatParser(
-                    url=video_id,
-                    on_connect=self.on_connect_yt,
-                    on_disconnect=self.on_disconnect_yt,
-                    on_message=on_msg,
-                    on_error=on_error,
-                    lang=self.language,
+            def on_msg(
+                msg_id,
+                author,
+                msg,
+                is_sponsor=False,
+                is_staff=False,
+                is_owner=False,
+            ):
+                if self.subscribers_only and is_sponsor is False:
+                    return
+                self.process_chat_message(
+                    msg_id=msg_id,
+                    platform="YouTube",
+                    author=author,
+                    message=msg,
+                    is_sponsor=is_sponsor,
+                    is_staff=is_staff,
+                    is_owner=is_owner,
                 )
 
-                self.youtube.run()
-        finally:
-            self.connect_yt_button.setEnabled(True)
+            def on_error(err):
+                self.add_sys_message(author="YouTube", text=err, status="error")
+
+            self.connect_yt_button.setText(_(self.language, "Connecting"))
+            self.yt_video_input.setReadOnly(True)
+            self.connect_yt_button.setEnabled(False)
+
+            self.youtube = YouTubeChatParser(
+                url=video_id,
+                on_connect=self.on_connect_yt,
+                on_disconnect=self.on_disconnect_yt,
+                on_message=on_msg,
+                on_error=on_error,
+                lang=self.language,
+            )
+
+            self.youtube.run()
 
     def on_connect_yt(self):
         self.yt_is_connected = True
-        self.yt_video_input.setReadOnly(True)
+        self.connect_yt_button.setEnabled(True)
 
         self.add_sys_message(
             author="YouTube", text=_(self.language, "chat_connected"), status="success"
@@ -926,8 +986,10 @@ class MainWindow(QMainWindow):
         self.connect_yt_button.setPalette(palette)
 
     def on_disconnect_yt(self):
+        self.youtube = None
         self.yt_is_connected = False
         self.yt_video_input.setReadOnly(False)
+        self.connect_yt_button.setEnabled(True)
 
         self.add_sys_message(
             author="YouTube",
@@ -1069,14 +1131,14 @@ class MainWindow(QMainWindow):
         self.toxic_sense_label_value = QLabel(str(self.toxic_sense))
         toxic_sense_layout.addWidget(self.toxic_sense_label_value)
 
-        # Number of messages to ban
+        # Toxicity level for user ban
 
         ban_limit_v_layout = QVBoxLayout()
         ban_limit_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(ban_limit_v_layout)
 
         self.ban_limit_label_desc = QLabel(
-            _(self.language, "The number of toxic messages leading to ban")
+            _(self.language, "Toxicity level for user ban")
         )
         ban_limit_v_layout.addWidget(self.ban_limit_label_desc)
 
@@ -1266,18 +1328,18 @@ class MainWindow(QMainWindow):
         self.auto_scroll = checked
 
     def clear_log(self):
-        self.chat_text.clear()
+        self.chat_model.clear()
         self.statusBar().showMessage(_(self.language, "Log cleared"), 3000)
 
     def export_log(self, choice):
         if choice == "html":
-            log = self.chat_text.toHtml()
+            log = self.chat_model_to_html()
             res = "Html Files (*.html);;All Files (*)"
         elif choice == "md":
-            log = self.chat_text.toPlainText()
+            log = self.chat_model_to_markdown()
             res = "Markdown Files (*.md);;All Files (*)"
         else:
-            log = self.chat_text.toPlainText()
+            log = self.chat_model_to_text()
             res = "Text Files (*.txt);;All Files (*)"
 
         file_path, _ = QFileDialog.getSaveFileName(self, "Save File", "", res)
@@ -1292,6 +1354,46 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(
                     f"{_(self.language, "File saved")}: {file_path}", 3000
                 )
+
+    def chat_model_to_text(self):
+        lines = []
+        for message in self.chat_model.messages():
+            text = str(message.get("text", "")).replace("\r\n", "\n")
+            lines.append(
+                f"[{message.get('time', '')}] [{message.get('platform', '')}] "
+                f"{message.get('author', '')}: {text}"
+            )
+        return "\n".join(lines)
+
+    def chat_model_to_markdown(self):
+        lines = []
+        for message in self.chat_model.messages():
+            time_str = message.get("time", "")
+            platform = message.get("platform", "")
+            author = message.get("author", "")
+            text = str(message.get("text", "")).replace("\r\n", "\n")
+            lines.append(f"- **{author}** [{time_str}] [{platform}]: {text}")
+        return "\n".join(lines)
+
+    def chat_model_to_html(self):
+        rows = [
+            "<html><body style='background:#222;color:#fff;font-family:Arial,sans-serif;'>"
+        ]
+        for message in self.chat_model.messages():
+            author = html.escape(str(message.get("author", "")))
+            platform = html.escape(str(message.get("platform", "")))
+            time_str = html.escape(str(message.get("time", "")))
+            text = html.escape(str(message.get("text", ""))).replace("\n", "<br>")
+            color = html.escape(str(message.get("color", "#fff")))
+            background = html.escape(str(message.get("background", "#444")))
+            rows.append(
+                "<div style='margin:8px 0;padding:10px;border-radius:8px;"
+                f"background:{background};color:{color};'>"
+                f"<b>{author}</b> <span style='font-size:12px;'>[{time_str}] [{platform}]</span><br>"
+                f"{text}</div>"
+            )
+        rows.append("</body></html>")
+        return "".join(rows)
 
     # === Helper methods ===
 
@@ -1359,67 +1461,33 @@ class MainWindow(QMainWindow):
 
     def _insert_message(self, platform, author, text, color=None, background=None):
         time_str = datetime.now().strftime("%H:%M:%S")
-        safe_author = html.escape(str(author))
+        safe_author = str(author)
         avatar_text = safe_author[:1].upper() if safe_author else "?"
         avatar_bg, avatar_fg = avatar_colors_from_name(safe_author)
-        white_color = "#fff"
         scrollbar = self.chat_text.verticalScrollBar()
         prev_scroll_value = scrollbar.value()
 
-        message = f"""
-<table cellpadding="5" cellspacing="10" width="100%">
-    <tr>
-        <td width="48" valign="top">
-            <div
-            style="
-                width: 40px;
-                height: 40px;
-                max-height: 40px;
-                text-align: center;
-                vertical-align: middle;
-                font-weight: bold;
-                line-height: 40px;
-                border-radius: 20px;
-                background:{avatar_bg};
-                color:{avatar_fg};
-                overflow: hidden;
-            "
-            >
-                <span style="font-size: 40px; color: {color or white_color};">{avatar_text}</span>
-            </div>
-        </td>
-        <td valign="middle" bgcolor="{background or "#444"}">
-            <div>
-                <div>
-                    <b style="color: {color or white_color};">{safe_author}</b>
-                    <span style="font-weight: normal; color: {color or white_color};">[{time_str}] [{platform}]</span>
-                </div>
-                {self.colored_text(text, color=color or white_color)}
-            </div>
-        </td>
-    </tr>
-</table>
-        """
+        message = {
+            "time": time_str,
+            "platform": str(platform),
+            "author": safe_author,
+            "text": str(text),
+            "color": color or "#ffffff",
+            "background": background or "#444444",
+            "avatar_text": avatar_text,
+            "avatar_bg": avatar_bg,
+            "avatar_fg": avatar_fg,
+        }
 
         try:
-            was_readonly = self.chat_text.isReadOnly()
-            if was_readonly:
-                self.chat_text.setReadOnly(False)
-
-            cursor = self.chat_text.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            cursor.insertHtml(message)
-            cursor.insertBlock()
-            self.chat_text.setTextCursor(cursor)
-
-            if was_readonly:
-                self.chat_text.setReadOnly(True)
+            self.chat_model.add_message(message)
 
             if self.auto_scroll:
-                scrollbar.setValue(scrollbar.maximum())
+                self.chat_text.scrollToBottom()
             else:
                 scrollbar.setValue(prev_scroll_value)
         except Exception:
+            logger.error("Failed insert message to self.chat_text")
             pass
 
     def save_settings(self):
@@ -1541,18 +1609,20 @@ class MainWindow(QMainWindow):
     def init_detoxify(self):
         cached_checkpoint = None
         try:
+            configure_torch_hub_cache()
             ensure_stdio_streams()
             self.add_sys_message(
                 author="Detoxify", text=_(self.language, "detoxify_loading")
             )
+            detoxify_cls = _get_detoxify_class()
             cached_checkpoint = find_cached_detoxify_checkpoint("multilingual")
             if cached_checkpoint:
-                self.detox_model = Detoxify(
+                self.detox_model = detoxify_cls(
                     model_type="multilingual",
                     checkpoint=cached_checkpoint,
                 )
             else:
-                self.detox_model = Detoxify("multilingual")
+                self.detox_model = detoxify_cls("multilingual")
             self.add_sys_message(
                 author="Detoxify",
                 text=_(self.language, "detoxify_loaded"),
@@ -1586,6 +1656,10 @@ class MainWindow(QMainWindow):
     def init_silero(self):
         self.add_sys_message(author="Silero", text=_(self.language, "silero_loading"))
         try:
+            configure_torch_hub_cache()
+            torch = _get_torch()
+            hub = torch.hub
+            torch.set_num_threads(2)
             with self.model_lock:
                 if getattr(sys, "frozen", False):
                     cached_repo = find_cached_silero_repo()
@@ -1689,19 +1763,20 @@ class MainWindow(QMainWindow):
         reason: str,
         is_staff=False,
         is_owner=False,
+        severity=1.0,
     ):
         platform_author = f"{platform}:{author}"
         self.add_message(
             platform=platform,
             author=author,
-            text=f"[{_(self.language, reason)}] {message}",
+            text=f"[{_(self.language, reason)} {severity:.2f}] {message}",
             color="gray",
         )
         self.messages_stats["filtered_count"] += 1
         self.on_change_stats()
 
         if is_staff is False and is_owner is False:
-            self.toxic_dict[platform_author] += 1
+            self.toxic_dict[platform_author] += severity
             if self.toxic_dict[platform_author] > self.ban_limit:
                 self.add_sys_message(
                     author=platform,
@@ -1748,6 +1823,7 @@ class MainWindow(QMainWindow):
                 reason="Stop words",
                 is_staff=is_staff,
                 is_owner=is_owner,
+                severity=0.25,
             )
             return
 
@@ -1759,10 +1835,11 @@ class MainWindow(QMainWindow):
                 self.process_toxic_message(
                     platform=platform,
                     author=cleaned_author,
-                    message=clean_message,
+                    message=cleaned_text,
                     reason=str(detox_key).replace("_", " ").capitalize(),
                     is_staff=is_staff,
                     is_owner=is_owner,
+                    severity=detox_value,
                 )
                 return
 
@@ -1797,7 +1874,8 @@ class MainWindow(QMainWindow):
         try:
             if self.model is not None:
                 with self.model_lock:
-                    with no_grad():
+                    torch = _get_torch()
+                    with torch.no_grad():
                         if self.voice == "random":
                             num = randint(0, len(VOICES[self.voice_language]) - 1)
                             voice = VOICES[self.voice_language][num]
@@ -1869,8 +1947,17 @@ class MainWindow(QMainWindow):
     def play_audio(self, audio_to_play):
         try:
             self._set_audio_indicator("🔴")
-            sd.play(audio_to_play)
-            sd.wait()
+            self._playback_abort_requested = False
+            sd.play(audio_to_play, blocking=False)
+            while True:
+                stream = sd.get_stream()
+                if stream is None or not stream.active:
+                    break
+                if self._playback_abort_requested or self.is_paused:
+                    self._playback_abort_requested = False
+                    sd.stop(ignore_errors=True)
+                    break
+                sleep(0.03)
         except Exception as e:
             self.add_sys_message(
                 author="play_audio()",

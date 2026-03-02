@@ -153,6 +153,7 @@ TRANSLATIONS = {
         "Delays and processing": "Задержки и обработка",
         "Configure": "Настроить",
         "Connected": "Подключено",
+        "Connecting": "Подключаемся",
         "Disconnected": "Отключено",
         "Resume": "Продолжить",
         "Pause": "Пауза",
@@ -220,6 +221,9 @@ TRANSLATIONS = {
         "List of banned": "Список заблокированных",
         "The number of toxic messages leading to ban": "Количество токсичных сообщений для блокировки",
         "Banned": "Заблокирован",
+        "Reconnect": "Переподключение",
+        "Failed to refresh access token": "Не удалось обновить токен доступа (access token)",
+        "Failed to create socket connection": "Не удалось создать сокет соединение",
     },
 }
 

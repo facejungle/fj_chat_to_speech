@@ -1829,7 +1829,7 @@ class MainWindow(QMainWindow):
             return
 
         if self.detox_model:
-            sentiment = self.detox_model.predict(cleaned_text)
+            sentiment = self.detox_model.predict(cleaned_text.lower())
             detox_key = max(sentiment, key=sentiment.get)
             detox_value = sentiment[detox_key]
             if detox_value > self.toxic_sense:

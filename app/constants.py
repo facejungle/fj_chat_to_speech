@@ -1,10 +1,12 @@
+from app.translations import DEFAULT_LANGUAGE
+
 APP_NAME = "FJ Chat to Speech"
+APP_VERSION = "1.1.0"
+
 PADDING = 20
-DEFAULT_BUFFER_SIZE = 5
 VOICES = {
     "ru": ("xenia", "aidar", "baya", "kseniya", "eugene"),
     "en": (
-        # "random",
         "en_0",
         "en_1",
         "en_2",
@@ -34,4 +36,22 @@ MODELS = {
     "en": "v3_en",
 }
 
-APP_VERSION = "1.0.10"
+DEFAULTS = {
+    "language": DEFAULT_LANGUAGE,
+    "voice_language": DEFAULT_LANGUAGE,
+    "voice": "random",
+    "auto_scroll": True,
+    "add_accents": True,
+    "read_author_names": False,
+    "read_platform_names": False,
+    "subscribers_only": False,
+    "auto_translate": False,
+    "buffer_maxsize": 5,
+    "min_msg_length": 2,
+    "max_msg_length": 180,
+    "toxic_sense": 0.6,
+    "ban_limit": 5,
+    "volume": 100,
+    "speech_rate": 1.0,
+    "speech_delay": 1.5,
+}

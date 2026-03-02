@@ -1,5 +1,3 @@
-from app.translations import DEFAULT_LANGUAGE
-
 APP_NAME = "FJ Chat to Speech"
 APP_VERSION = "1.1.0"
 
@@ -37,8 +35,6 @@ MODELS = {
 }
 
 DEFAULTS = {
-    "language": DEFAULT_LANGUAGE,
-    "voice_language": DEFAULT_LANGUAGE,
     "voice": "random",
     "auto_scroll": True,
     "add_accents": True,

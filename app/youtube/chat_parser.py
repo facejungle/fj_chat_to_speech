@@ -51,6 +51,8 @@ util.get_channelid_2nd = lambda client, video_id: _extract_channel_id(video_id)
 
 
 class YouTubeChatParser:
+    MAX_RETRIES = 5
+
     def __init__(
         self,
         url: str,
@@ -85,47 +87,49 @@ class YouTubeChatParser:
         use_interruptable = current_thread() is main_thread()
         return pytchat.create(video_id=video_id, interruptable=use_interruptable)
 
-    def _stream_chat(self, chat) -> bool:
+    def _stream_chat(self, chat) -> str:
         errors = 0
 
-        while chat.is_alive() and self.is_connected:
+        while errors < self.MAX_RETRIES:
             try:
-                data = chat.get()
-                for message in data.sync_items():
-                    if message.type == "textMessage":
-                        author_details = message.author
-                        self.on_message(
-                            msg_id=message.id,
-                            author=author_details.name,
-                            msg=message.message,
-                            is_sponsor=author_details.isChatSponsor,
-                            is_staff=author_details.isChatModerator,
-                            is_owner=author_details.isChatOwner,
-                        )
+                while chat.is_alive() and self.is_connected:
+                    data = chat.get()
+                    for message in data.sync_items():
+                        if message.type == "textMessage":
+                            author_details = message.author
+                            self.on_message(
+                                msg_id=message.id,
+                                author=author_details.name,
+                                msg=message.message,
+                                is_sponsor=author_details.isChatSponsor,
+                                is_staff=author_details.isChatModerator,
+                                is_owner=author_details.isChatOwner,
+                            )
 
-                raise_for_status = getattr(chat, "raise_for_status", None)
-                if callable(raise_for_status):
-                    raise_for_status()
+                    raise_for_status = getattr(chat, "raise_for_status", None)
+                    if callable(raise_for_status):
+                        raise_for_status()
 
-                errors = 0
+                    errors = 0
+                else:
+                    raise ConnectionError(_(self.lang, "connection_failed"))
+
             except Exception as e:
+                if not self.is_connected:
+                    return
                 errors += 1
                 self.on_error(
-                    f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}"
+                    f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}. {_(self.lang, 'Reconnect')} {errors}/{self.MAX_RETRIES}"
                 )
-                sleep(min(errors, 5))
-                if errors >= 5:
-                    break
+
+                sleep(errors)
 
     def _connect(self):
-        chat = None
         self.is_connected = True
+        chat = None
+
         try:
             chat = self._create_chat(self.video_id)
-            if not chat.is_alive():
-                self.on_error(_(self.lang, "connection_failed"))
-                return
-
             self.on_connect()
             self._stream_chat(chat)
 

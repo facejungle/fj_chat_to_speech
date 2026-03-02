@@ -1,3 +1,4 @@
+from logging import getLogger
 import re
 import socket
 from threading import Thread
@@ -8,8 +9,14 @@ import requests
 
 from app.translations import _, translate_text
 
+logger = getLogger("main")
+
 
 class TwitchChatListener:
+    MAX_RETRIES = 5
+    SERVER = "irc.chat.twitch.tv"
+    PORT = 6667
+
     def __init__(
         self,
         client_id,
@@ -39,6 +46,7 @@ class TwitchChatListener:
         self.listen_thread = None
         self.last_ping = time()
         self._is_stopping = False
+        self._connected_once = False
 
     def _handle_expired_access(self):
         try:
@@ -86,72 +94,84 @@ class TwitchChatListener:
 
         return channel_input
 
+    def _create_socket(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect((self.SERVER, self.PORT))
+
+            self._send_command(
+                "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership"
+            )
+            self._send_command(f"PASS oauth:{self.token}")
+            self._send_command(f"NICK {self.nickname}")
+
+            response = self.sock.recv(4096).decode("utf-8", errors="ignore")
+            if "Login authentication failed" in response:
+                if self._handle_expired_access():
+                    self.sock.close()
+                    return self._create_socket()
+                else:
+                    self.on_error(_(self.lang, "Failed to refresh access token"))
+                    return False
+
+            self._send_command(f"JOIN #{self.channel}")
+            return True
+
+        except Exception as e:
+            self.on_error(_(self.lang, "Failed to create socket connection"))
+            return False
+
+    def _close_socket(self):
+        if not self.sock:
+            return
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+        self.sock = None
+
     def _connect(self):
-        for attempt in range(2):
-            try:
-                server = "irc.chat.twitch.tv"
-                port = 6667
+        reconnect_attempts = 0
 
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(10)
-                self.sock.connect((server, port))
-
-                self._send_command(
-                    "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership"
-                )
-                self._send_command(f"PASS oauth:{self.token}")
-                self._send_command(f"NICK {self.nickname}")
-
-                capabilities_confirmed = False
-                start_time = time()
-                timeout = 10
-
-                while not capabilities_confirmed and (time() - start_time) < timeout:
-                    try:
-                        response = self.sock.recv(4096).decode("utf-8", errors="ignore")
-                        if "Login authentication failed" in response:
-                            if attempt == 0 and self._handle_expired_access():
-                                self.sock.close()
-                                self.sock = None
-                                break
-                            self.on_error(_(self.lang, "connection_failed"))
-                            return
-
-                        if "CAP * ACK" in response:
-                            capabilities_confirmed = True
-                            break
-
-                    except socket.timeout:
-                        continue
-
-                if self.sock is None:
+        try:
+            while reconnect_attempts < self.MAX_RETRIES and not self._is_stopping:
+                self.is_connected = False
+                if not self._create_socket():
+                    reconnect_attempts += 1
+                    sleep(reconnect_attempts)
                     continue
 
-                if not capabilities_confirmed:
-                    print(
-                        "[TwitchChatListener] Warning: Capabilities not confirmed, continuing..."
-                    )
-
-                self._send_command(f"JOIN #{self.channel}")
-
-                connected = False
                 start_time = time()
 
-                while not connected and (time() - start_time) < timeout:
+                while (
+                    not self.is_connected
+                    and (time() - start_time) < 10
+                    and not self._is_stopping
+                ):
                     try:
                         response = self.sock.recv(4096).decode("utf-8", errors="ignore")
                         lines = response.strip().split("\r\n")
                         for line in lines:
                             if "Login authentication failed" in line:
-                                if attempt == 0 and self._handle_expired_access():
-                                    self.sock.close()
-                                    self.sock = None
+                                if self._handle_expired_access():
+                                    self._close_socket()
+                                    if self._create_socket():
+                                        start_time = time()
+                                        break
+                                    reconnect_attempts += 1
                                     break
-                                self.on_error(_(self.lang, "connection_failed"))
+                                self.on_error(
+                                    _(self.lang, "Failed to refresh access token")
+                                )
                                 return
 
                             if f"JOIN #{self.channel}" in line:
-                                connected = True
+                                self.is_connected = True
                                 break
 
                             if "466" in line:  # ERR_ERRONEOUSNICKNAME
@@ -162,42 +182,60 @@ class TwitchChatListener:
                                     _(self.lang, "The nickname is already in use")
                                 )
                                 return
-                        if self.sock is None:
-                            break
 
                     except socket.timeout:
                         continue
 
-                if self.sock is None:
-                    continue
-
-                if not connected:
-                    self.on_error(_(self.lang, "connection_failed"))
+                if self._is_stopping:
                     return
 
-                self.is_connected = True
-                self.on_connect()
-                return
+                if not self.is_connected:
+                    reconnect_attempts += 1
+                    self.on_error(
+                        f"{_(self.lang, 'connection_failed')}. {_(self.lang, 'Reconnect')} {reconnect_attempts}/{self.MAX_RETRIES}"
+                    )
+                    self._close_socket()
+                    sleep(reconnect_attempts)
+                    continue
 
-            except Exception as e:
+                if not self._connected_once:
+                    self._connected_once = True
+                    self.on_connect()
+
+                reconnect_attempts = 0
+                if self._listen_chat():
+                    return
+
+                if self._is_stopping:
+                    return
+
+                reconnect_attempts += 1
                 self.on_error(
-                    f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
+                    f"{_(self.lang, 'error_fetch_messages')}. {_(self.lang, 'Reconnect')} {reconnect_attempts}/{self.MAX_RETRIES}"
                 )
+                sleep(reconnect_attempts)
+
+            if not self._is_stopping:
+                self.on_error(_(self.lang, "connection_failed"))
+
+        except Exception as e:
+            if self._is_stopping:
                 return
+            self.on_error(
+                f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
+            )
+            return
+        finally:
+            self.disconnect()
 
     def disconnect(self):
-        was_connected = self.is_connected
-        self._is_stopping = True
-        self.is_connected = False
-        if self.sock:
-            try:
-                self._send_command(f"PART #{self.channel}")
-                self.sock.close()
-            except:
-                pass
-            self.sock = None
+        was_connected = self.is_connected or self._connected_once
         if was_connected:
             self.on_disconnect()
+        self._is_stopping = True
+        self.is_connected = False
+        self._connected_once = False
+        self._close_socket()
 
     def _fetch(self, endpoint, params=None):
         url = f"https://api.twitch.tv/helix/{endpoint}"
@@ -219,8 +257,8 @@ class TwitchChatListener:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(
-                f"[TwitchChatListener] API error: {translate_text(str(e), self.lang)}"
+            logger.error(
+                "[TwitchChatListener] API error: %s", translate_text(str(e), self.lang)
             )
             return None
 
@@ -297,25 +335,33 @@ class TwitchChatListener:
         return None
 
     def _listen_chat(self):
-        errors = 0
-        max_errors = 5
         buffer = ""
-        self._is_stopping = False
-        while self.is_connected and self.sock:
-            if errors >= max_errors:
-                self.disconnect()
-                break
+        try:
+            while self.is_connected and self.sock:
+                if self._is_stopping:
+                    return True
 
-            try:
-                data = self.sock.recv(4096).decode("utf-8", errors="ignore")
+                if time() - self.last_ping > 60:
+                    try:
+                        self._send_command("PING")
+                        self.last_ping = time()
+                    except Exception:
+                        pass
+
+                try:
+                    data = self.sock.recv(4096).decode("utf-8", errors="ignore")
+                except socket.timeout:
+                    continue
 
                 if not data:
-                    sleep(0.1)
-                    continue
+                    raise ConnectionError("empty socket data")
 
                 buffer += data
 
                 while "\r\n" in buffer:
+                    if self._is_stopping:
+                        return True
+
                     line, buffer = buffer.split("\r\n", 1)
 
                     if not line:
@@ -353,47 +399,21 @@ class TwitchChatListener:
                             is_owner=is_owner,
                         )
 
-                errors = 0
+            return self._is_stopping
 
-            except socket.timeout:
-                if time() - self.last_ping > 60:
-                    try:
-                        self._send_command("PING")
-                        self.last_ping = time()
-                    except:
-                        pass
-                continue
-
-            except ConnectionResetError:
-                if self._is_stopping:
-                    break
-                self.on_error(_(self.lang, "Connection lost"))
-                self.disconnect()
-                break
-
-            # except OSError as e:
-            #     # Socket was closed from another thread during disconnect on Windows.
-            #     if self._is_stopping or getattr(e, "winerror", None) == 10038:
-            #         break
-            #     self.on_error(f"{_(self.lang, "error_fetch_messages")}. {e}")
-            #     errors += 1
-            #     sleep(1 * errors)
-
-            except Exception as e:
-                if self._is_stopping:
-                    break
-                self.on_error(
-                    f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}"
-                )
-                errors += 1
-                sleep(1 * errors)
-            finally:
-                sleep(1)
+        except Exception as e:
+            if self._is_stopping:
+                return True
+            self.on_error(
+                f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}"
+            )
+            self.is_connected = False
+            self._close_socket()
+            return False
 
     def run(self):
         try:
-            self._connect()
-            self.listen_thread = Thread(target=self._listen_chat, daemon=True)
+            self.listen_thread = Thread(target=self._connect, daemon=True)
             self.listen_thread.start()
             return True
         except Exception as e:
@@ -401,8 +421,3 @@ class TwitchChatListener:
                 f"{_(self.lang, "Runtime error")}. {translate_text(str(e), self.lang)}"
             )
             return False
-
-    def stop(self):
-        self.disconnect()
-        if self.listen_thread and self.listen_thread.is_alive():
-            self.listen_thread.join(timeout=5)

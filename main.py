@@ -53,6 +53,7 @@ from googletrans import Translator
 from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 from app.schema import MessageStatsTD, TwitchCredentialsTD
 from app.translations import (
+    DEFAULT_LANGUAGE,
     TRANSLATIONS,
     _,
     translate_text,
@@ -145,8 +146,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.root_widget)
         self.root_layout = QVBoxLayout(self.root_widget)
 
-        self.language = DEFAULTS["language"]
-        self.voice_language = DEFAULTS["voice_language"]
+        self.language = DEFAULT_LANGUAGE
+        self.voice_language = DEFAULT_LANGUAGE
         self.voice = DEFAULTS["voice"]
 
         self.auto_scroll = DEFAULTS["auto_scroll"]

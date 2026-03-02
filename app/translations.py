@@ -219,7 +219,7 @@ TRANSLATIONS = {
         "Link": "Ссылка",
         "Filtered": "Отфильтровано",
         "List of banned": "Список заблокированных",
-        "The number of toxic messages leading to ban": "Количество токсичных сообщений для блокировки",
+        "Toxicity level for user ban": "Уровень токсичности для блокировки пользователя",
         "Banned": "Заблокирован",
         "Reconnect": "Переподключение",
         "Failed to refresh access token": "Не удалось обновить токен доступа (access token)",

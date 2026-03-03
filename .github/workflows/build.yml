@@ -57,7 +57,8 @@ jobs:
           organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
           project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY }}
-          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          github-artifact-name: unsigned-windows-exe
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           wait-for-completion: true
           output-artifact-directory: signed-artifact
 

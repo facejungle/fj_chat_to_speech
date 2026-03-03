@@ -7,6 +7,8 @@ import re
 import sys
 import importlib
 
+import num2words
+
 
 from app.constants import APP_NAME
 from app.translations import _
@@ -290,7 +292,7 @@ def clean_message(text, ui_lang):
     # Remove emoji glue/modifiers that can remain after stripping main codepoints.
     text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
 
-    text = re.sub(r"[^\w\s\.\,\!\?\-\:\'\"\(\)]", " ", text)
+    # text = re.sub(r"[^\w\s\.\,\!\?\-\:\'\"\(\)]", " ", text)
 
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
@@ -331,3 +333,35 @@ def avatar_colors_from_name(name: str):
     lum = 0.299 * r + 0.587 * g + 0.114 * b
     fg = "#000000" if lum > 0.6 else "#ffffff"
     return bg, fg
+
+
+def convert_numbers_to_words(text, lang):
+    """Convert numbers to text representation"""
+
+    def replace_number(match):
+        num = match.group()
+        try:
+            if "." in num:
+                parts = num.split(".")
+                integer_part = num2words(int(parts[0]), lang=lang)
+                fractional_part = num2words(int(parts[1]), lang=lang)
+                return f"{integer_part} {_(lang, "point")} {fractional_part}"
+            elif "," in num:
+                parts = num.split(",")
+                return num2words(int("".join(parts)), lang=lang)
+                # integer_part = num2words(int(parts[0]), lang=lang)
+                # fractional_part = num2words(int(parts[1]), lang=lang)
+                # return f"{integer_part} {_(lang, "comma")} {fractional_part}"
+            else:
+                return num2words(int(num), lang=lang)
+        except Exception as e:
+            # self.add_sys_message(
+            #     author="_translate_text()",
+            #     text=f"{_(self.language, 'Error convert num to word')}. {e}",
+            #     status="error",
+            # )
+            return num
+
+    number_pattern = r"-?\d+(?:[.,]\d+)?"
+    converted_text = re.sub(number_pattern, replace_number, text)
+    return converted_text

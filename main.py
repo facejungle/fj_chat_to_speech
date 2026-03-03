@@ -1613,7 +1613,7 @@ class MainWindow(QMainWindow):
         """Check for stop words"""
         text_words = text.split(" ")
         for word in text_words:
-            if word in self.stop_words:
+            if word.lower() in self.stop_words:
                 return True
         return False
 

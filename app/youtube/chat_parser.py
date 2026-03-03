@@ -1,57 +1,21 @@
-import re
 from threading import Thread, current_thread, main_thread
 from time import sleep
-import httpx
 import pytchat
-from pytchat import util
+from pytchat.core import PytchatCore
 import urllib
 
 from app.translations import _, translate_text
 
-_CHANNEL_PATTERNS = (
-    re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"'),
-    re.compile(r'\\"channelId\\":\\"(UC[a-zA-Z0-9_-]{22})\\"'),
-)
-
-
-def _extract_channel_id(video_id: str) -> str:
-    headers = {
-        "user-agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "accept-language": "en-US,en;q=0.9",
-    }
-
-    urls = (
-        f"https://www.youtube.com/watch?v={video_id}",
-        f"https://www.youtube.com/embed/{video_id}",
-        f"https://m.youtube.com/watch?v={video_id}",
-    )
-
-    with httpx.Client(
-        http2=True, follow_redirects=True, timeout=20.0, headers=headers
-    ) as client:
-        for url in urls:
-            text = client.get(url).text
-            for pattern in _CHANNEL_PATTERNS:
-                match = pattern.search(text)
-                if match:
-                    return match.group(1)
-
-    raise pytchat.exceptions.InvalidVideoIdException(
-        f"Cannot find channel id for video id:{video_id}."
-    )
-
-
-# Patch pytchat channel-id resolvers to avoid brittle built-in regex fallback.
-util.get_channelid = lambda client, video_id: _extract_channel_id(video_id)
-util.get_channelid_2nd = lambda client, video_id: _extract_channel_id(video_id)
-
 
 class YouTubeChatParser:
     MAX_RETRIES = 5
+    POLL_TYPES = {
+        "poll",
+        "liveChatPoll",
+        "pollOpened",
+        "pollUpdated",
+        "pollClosed",
+    }
 
     def __init__(
         self,
@@ -71,7 +35,7 @@ class YouTubeChatParser:
         self.lang = lang
 
         self.is_connected = False
-        self.video_id = self._parse_video_id(self.url)
+        self.video_id = self._parse_video_id(url)
 
     def _stop_chat(self, chat):
         if not chat:
@@ -83,11 +47,54 @@ class YouTubeChatParser:
             except Exception:
                 pass
 
-    def _create_chat(self, video_id: str):
+    def _create_chat(self) -> PytchatCore:
         use_interruptable = current_thread() is main_thread()
-        return pytchat.create(video_id=video_id, interruptable=use_interruptable)
+        return pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
 
-    def _stream_chat(self, chat) -> str:
+    def _build_message_payload(self, message):
+        message_type = str(getattr(message, "type", "") or "").strip()
+        message_text = str(getattr(message, "message", "") or "").strip()
+        amount_text = str(getattr(message, "amountString", "") or "").strip()
+        currency_text = str(getattr(message, "currency", "") or "").strip()
+
+        text = ""
+        is_donate = False
+
+        if message_type == "textMessage":
+            return {"msg": message_text, "is_donate": is_donate}
+        elif message_type in self.POLL_TYPES:
+            if message_type == "pollOpened":
+                text = _(self.lang, "Poll is opened")
+            elif message_type == "pollUpdated":
+                text = _(self.lang, "Poll is updated")
+            elif message_type == "pollClosed":
+                text = _(self.lang, "Poll is closed")
+            else:
+                text = _(self.lang, "Poll")
+        elif message_type == "donation":
+            text = _(self.lang, "Donation")
+            is_donate = True
+        elif message_type == "superChat":
+            text = _(self.lang, "Super Chat")
+            is_donate = True
+        elif message_type == "superSticker":
+            text = _(self.lang, "Super Sticker")
+            is_donate = True
+        elif message_type == "newSponsor":
+            text = _(self.lang, "New sponsor")
+            is_donate = True
+
+        if amount_text and currency_text:
+            text += f" [{amount_text} {currency_text}]"
+        elif amount_text:
+            text += f" [{amount_text}]"
+
+        if message_text:
+            text += f": {message_text}"
+
+        return {"msg": text, "is_donate": is_donate}
+
+    def _stream_chat(self, chat: PytchatCore) -> str:
         errors = 0
 
         while errors < self.MAX_RETRIES:
@@ -95,16 +102,23 @@ class YouTubeChatParser:
                 while chat.is_alive() and self.is_connected:
                     data = chat.get()
                     for message in data.sync_items():
-                        if message.type == "textMessage":
-                            author_details = message.author
-                            self.on_message(
-                                msg_id=message.id,
-                                author=author_details.name,
-                                msg=message.message,
-                                is_sponsor=author_details.isChatSponsor,
-                                is_staff=author_details.isChatModerator,
-                                is_owner=author_details.isChatOwner,
-                            )
+                        author_details = getattr(message, "author", None)
+                        if author_details is None:
+                            continue
+
+                        payload = self._build_message_payload(message)
+                        if not payload["msg"]:
+                            continue
+
+                        self.on_message(
+                            msg_id=message.id,
+                            author=getattr(author_details, "name", ""),
+                            msg=payload["msg"],
+                            is_sponsor=getattr(author_details, "isChatSponsor", False),
+                            is_staff=getattr(author_details, "isChatModerator", False),
+                            is_owner=getattr(author_details, "isChatOwner", False),
+                            is_donate=payload["is_donate"],
+                        )
 
                     raise_for_status = getattr(chat, "raise_for_status", None)
                     if callable(raise_for_status):
@@ -129,7 +143,7 @@ class YouTubeChatParser:
         chat = None
 
         try:
-            chat = self._create_chat(self.video_id)
+            chat = self._create_chat()
             self.on_connect()
             self._stream_chat(chat)
 

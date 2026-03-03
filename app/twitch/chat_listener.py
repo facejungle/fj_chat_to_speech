@@ -16,6 +16,21 @@ class TwitchChatListener:
     MAX_RETRIES = 5
     SERVER = "irc.chat.twitch.tv"
     PORT = 6667
+    DONATION_MSG_IDS = frozenset(
+        {
+            "sub",
+            "resub",
+            "subgift",
+            "anonsubgift",
+            "submysterygift",
+            "anonsubmysterygift",
+            "giftpaidupgrade",
+            "anongiftpaidupgrade",
+            "primepaidupgrade",
+            "standardpayforward",
+            "communitypayforward",
+        }
+    )
 
     def __init__(
         self,
@@ -310,6 +325,33 @@ class TwitchChatListener:
                         "badges": badges,
                         "tags": tag_dict,
                     }
+
+                if " USERNOTICE " in rest:
+                    notice_message = tag_dict.get("system-msg", "")
+                    trailing_message = ""
+                    split_pos = rest.find(" :")
+                    if split_pos != -1:
+                        trailing_message = rest[split_pos + 2 :]
+                    if trailing_message:
+                        notice_message = (
+                            f"{notice_message}: {trailing_message}"
+                            if notice_message
+                            else trailing_message
+                        )
+
+                    return {
+                        "id": tag_dict.get("id"),
+                        "username": tag_dict.get("display-name")
+                        or tag_dict.get("login")
+                        or "twitch",
+                        "message": notice_message,
+                        "subscriber": tag_dict.get("subscriber") == "1"
+                        or tag_dict.get("msg-id") in self.DONATION_MSG_IDS,
+                        "mod": tag_dict.get("mod") == "1",
+                        "vip": tag_dict.get("vip") == "1",
+                        "badges": tag_dict.get("badges", ""),
+                        "tags": tag_dict,
+                    }
             else:
                 match = re.search(
                     r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", line
@@ -389,6 +431,14 @@ class TwitchChatListener:
                             or "admin/1" in badges
                             or "global_mod/1" in badges
                         )
+                        bits = tags.get("bits")
+                        paid_amount = tags.get("pinned-chat-paid-amount")
+                        notice_event = tags.get("msg-id")
+                        is_donate = (
+                            (bits and bits != "0")
+                            or (paid_amount and paid_amount != "0")
+                            or notice_event in self.DONATION_MSG_IDS
+                        )
 
                         self.on_message(
                             msg_id=msg_data["id"],
@@ -397,6 +447,7 @@ class TwitchChatListener:
                             is_sponsor=msg_data["subscriber"],
                             is_staff=is_staff,
                             is_owner=is_owner,
+                            is_donate=is_donate,
                         )
 
             return self._is_stopping

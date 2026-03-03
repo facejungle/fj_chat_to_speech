@@ -8,13 +8,11 @@ from datetime import datetime
 import gc
 import json
 import html
-import re
 import threading
 import importlib
 from time import sleep
 import hashlib
 
-from num2words import num2words
 import sounddevice as sd
 from PyQt6.QtWidgets import (
     QApplication,
@@ -74,6 +72,7 @@ from app.utils import (
     clean_message,
     clear_detoxify_checkpoint_cache,
     configure_torch_hub_cache,
+    convert_numbers_to_words,
     ensure_stdio_streams,
     find_cached_detoxify_checkpoint,
     find_cached_silero_repo,
@@ -154,7 +153,7 @@ class MainWindow(QMainWindow):
         self.add_accents = DEFAULTS["add_accents"]
         self.read_author_names = DEFAULTS["read_author_names"]
         self.read_platform_names = DEFAULTS["read_platform_names"]
-        self.subscribers_only = DEFAULTS["subscribers_only"]
+        self.read_filter = DEFAULTS["read_filter"]
         self.auto_translate = DEFAULTS["auto_translate"]
 
         self.volume = DEFAULTS["volume"]
@@ -168,7 +167,6 @@ class MainWindow(QMainWindow):
         self.stop_words = tuple()
         self.chat_only_mode = False
         self.is_paused = False
-        self._playback_abort_requested = False
 
         # Connections
         self.youtube = None
@@ -307,14 +305,6 @@ class MainWindow(QMainWindow):
         read_platform_action.triggered.connect(self.toggle_read_platform_names)
         msg_settings_menu.addAction(read_platform_action)
 
-        subscribers_only_action = QAction(
-            _(self.language, "Subscribers only"), msg_settings_menu
-        )
-        subscribers_only_action.setCheckable(True)
-        subscribers_only_action.setChecked(self.subscribers_only)
-        subscribers_only_action.triggered.connect(self.toggle_subscribers_only)
-        msg_settings_menu.addAction(subscribers_only_action)
-
         auto_translate_action = QAction(
             _(self.language, "Translate messages"), msg_settings_menu
         )
@@ -322,13 +312,6 @@ class MainWindow(QMainWindow):
         auto_translate_action.setChecked(self.auto_translate)
         auto_translate_action.triggered.connect(self.toggle_auto_translate)
         msg_settings_menu.addAction(auto_translate_action)
-
-        # view_menu = menu_bar.addMenu("View")
-        # self.chat_only_action = QAction("Chat only mode", self)
-        # self.chat_only_action.setCheckable(True)
-        # self.chat_only_action.setChecked(self.chat_only_mode)
-        # self.chat_only_action.triggered.connect(self.toggle_chat_only_mode)
-        # view_menu.addAction(self.chat_only_action)
 
     def setup_connections_grid(self):
         connections_grid = QGridLayout()
@@ -380,6 +363,15 @@ class MainWindow(QMainWindow):
         else:
             self.pause_button.setPalette(self.style().standardPalette())
 
+    def setup_read_filter(self):
+        items = [_(self.language, i) for i in DEFAULTS["read_filter"]]
+        self.read_filter_combo = MenuComboCheckBox(
+            _(self.language, "Read messages"), items
+        )
+        self.read_filter_combo.setSelected(self.read_filter)
+        self.read_filter_combo.changed.connect(self.on_change_read_filter)
+        self.control_layout.addWidget(self.read_filter_combo)
+
     def setup_central_widget(self):
         chat_header_layout = QHBoxLayout()
         chat_header_layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
@@ -387,11 +379,14 @@ class MainWindow(QMainWindow):
         # self.chat_header_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
         # chat_header_layout.addWidget(self.chat_header_label, 1)
 
-        control_layout = QHBoxLayout()
-        chat_header_layout.addLayout(control_layout, 1)
-        control_layout.setContentsMargins(0, 0, PADDING, 0)
+        self.control_layout = QHBoxLayout()
+        chat_header_layout.addLayout(self.control_layout, 1)
+        self.control_layout.setContentsMargins(0, 0, PADDING, 0)
         self.audio_indicator = QLabel("🟢")
-        control_layout.addWidget(self.audio_indicator)
+        self.control_layout.addWidget(self.audio_indicator)
+
+        self.setup_read_filter()
+
         self.pause_button = QPushButton(
             _(self.language, "Stopped")
             if self.is_paused
@@ -399,10 +394,11 @@ class MainWindow(QMainWindow):
         )
         self.setup_pause_button_color()
         self.pause_button.clicked.connect(self.on_pause_clicked)
-        control_layout.addWidget(self.pause_button)
+        self.control_layout.addWidget(self.pause_button)
+
         self.clr_queue_button = QPushButton(_(self.language, "Clear queue"))
         self.clr_queue_button.clicked.connect(self.on_clear_queue)
-        control_layout.addWidget(self.clr_queue_button)
+        self.control_layout.addWidget(self.clr_queue_button)
 
         self.auto_scroll_checkbox = QCheckBox(_(self.language, "Auto-scroll"))
         self.auto_scroll_checkbox.setChecked(self.auto_scroll)
@@ -559,12 +555,10 @@ class MainWindow(QMainWindow):
         )
         self.setup_pause_button_color()
         if self.is_paused:
-            self._playback_abort_requested = True
             self.statusBar().showMessage(
                 _(self.language, "Playback has been stopped"), 3000
             )
         else:
-            self._playback_abort_requested = False
             self.statusBar().showMessage(
                 _(self.language, "Speech playback continued..."), 3000
             )
@@ -575,6 +569,14 @@ class MainWindow(QMainWindow):
         self.setup_menu_bar()
         self.apply_chat_only_mode()
         self.on_change_stats()
+
+        read_filter_selected = self.read_filter_combo.getSelectedIndex()
+        read_filter_items = [_(self.language, i) for i in DEFAULTS["read_filter"]]
+        self.read_filter_combo.setItems(read_filter_items)
+        self.read_filter_combo.setSelectedIndices(read_filter_selected)
+        self.read_filter_combo.setTitle(_(self.language, "Read messages"))
+        self.read_filter = self.read_filter_combo.getSelected()
+
         self.speech_rate_label.setText(_(self.language, "Speech rate"))
         self.vol_label.setText(_(self.language, "Volume"))
         self.voice_label.setText(self.status_voice_text())
@@ -592,9 +594,9 @@ class MainWindow(QMainWindow):
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
         self.pause_button.setText(
-            f"⏸️ {_(self.language, "Stopped")}"
+            _(self.language, "Stopped")
             if self.is_paused
-            else f"▶️ {_(self.language, "Playback...")}"
+            else _(self.language, "Playback...")
         )
         self.clr_queue_button.setText((_(self.language, "Clear queue")))
 
@@ -616,6 +618,9 @@ class MainWindow(QMainWindow):
     def on_change_volume(self, value):
         self.volume = value
         self.vol_label_value.setText(f"{self.volume}%")
+
+    def on_change_read_filter(self):
+        self.read_filter = self.read_filter_combo.getSelected()
 
     def font_size_changed(self, index):
         font_size = int(self.font_size_combo.currentText())
@@ -805,9 +810,8 @@ class MainWindow(QMainWindow):
                 is_sponsor=False,
                 is_staff=False,
                 is_owner=False,
+                is_donate=False,
             ):
-                if self.subscribers_only and is_sponsor is False:
-                    return
                 self.process_chat_message(
                     msg_id=msg_id,
                     platform="Twitch",
@@ -816,6 +820,7 @@ class MainWindow(QMainWindow):
                     is_sponsor=is_sponsor,
                     is_staff=is_staff,
                     is_owner=is_owner,
+                    is_donate=is_donate,
                 )
 
             def on_error(err):
@@ -942,9 +947,8 @@ class MainWindow(QMainWindow):
                 is_sponsor=False,
                 is_staff=False,
                 is_owner=False,
+                is_donate=False,
             ):
-                if self.subscribers_only and is_sponsor is False:
-                    return
                 self.process_chat_message(
                     msg_id=msg_id,
                     platform="YouTube",
@@ -953,6 +957,7 @@ class MainWindow(QMainWindow):
                     is_sponsor=is_sponsor,
                     is_staff=is_staff,
                     is_owner=is_owner,
+                    is_donate=is_donate,
                 )
 
             def on_error(err):
@@ -1295,9 +1300,6 @@ class MainWindow(QMainWindow):
     def toggle_read_platform_names(self, checked):
         self.read_platform_names = checked
 
-    def toggle_subscribers_only(self, checked):
-        self.subscribers_only = checked
-
     def toggle_auto_translate(self, checked):
         self.auto_translate = checked
 
@@ -1503,7 +1505,7 @@ class MainWindow(QMainWindow):
             "add_accents": self.add_accents,
             "read_author_names": self.read_author_names,
             "read_platform_names": self.read_platform_names,
-            "subscribers_only": self.subscribers_only,
+            "read_filter": self.read_filter,
             "toxic_sense": self.toxic_sense,
             "ban_limit": self.ban_limit,
             "auto_translate": self.auto_translate,
@@ -1550,9 +1552,7 @@ class MainWindow(QMainWindow):
             self.read_platform_names = settings.get(
                 "read_platform_names", self.read_platform_names
             )
-            self.subscribers_only = settings.get(
-                "subscribers_only", self.subscribers_only
-            )
+            self.read_filter = settings.get("read_filter", self.read_filter)
             self.toxic_sense = settings.get("toxic_sense", self.toxic_sense)
             self.ban_limit = settings.get("ban_limit", self.ban_limit)
             self.auto_translate = settings.get("auto_translate", self.auto_translate)
@@ -1731,31 +1731,6 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
-    def convert_numbers_to_words(self, text):
-        """Convert numbers to text representation"""
-
-        def replace_number(match):
-            num = match.group()
-            try:
-                if "." in num:
-                    parts = num.split(".")
-                    integer_part = num2words(int(parts[0]), lang=self.voice_language)
-                    fractional_part = num2words(int(parts[1]), lang=self.voice_language)
-                    return f"{integer_part} {_(self.voice_language, "point")} {fractional_part}"
-                else:
-                    return num2words(int(num), lang=self.voice_language)
-            except Exception as e:
-                # self.add_sys_message(
-                #     author="_translate_text()",
-                #     text=f"{_(self.language, 'Error convert num to word')}. {e}",
-                #     status="error",
-                # )
-                return num
-
-        number_pattern = r"-?\d+(?:[.,]\d+)?"
-        converted_text = re.sub(number_pattern, replace_number, text)
-        return converted_text
-
     def process_toxic_message(
         self,
         platform: str,
@@ -1796,8 +1771,10 @@ class MainWindow(QMainWindow):
         is_sponsor=False,
         is_staff=False,
         is_owner=False,
+        is_donate=False,
     ):
         cleaned_author = clean_message(author, self.language)
+        cleaned_author = cleaned_author.removeprefix("@")
         platform_author = f"{platform}:{cleaned_author}"
         cleaned_text = clean_message(message, self.language)
         if not cleaned_text:
@@ -1850,15 +1827,38 @@ class MainWindow(QMainWindow):
             if not cleaned_text:
                 return
 
-        self.add_message(platform=platform, author=cleaned_author, text=cleaned_text)
+        self.add_message(
+            platform=platform,
+            author=cleaned_author,
+            text=cleaned_text,
+            background="darkGreen" if is_donate else None,
+        )
+
+        read_filter = self.read_filter_combo.getSelected()
+        if is_staff and _(self.language, "Moderator") not in read_filter:
+            return
+        elif is_owner and _(self.language, "Author") not in read_filter:
+            return
+        elif is_sponsor and _(self.language, "Sponsor") not in read_filter:
+            return
+        elif is_donate and _(self.language, "Donation") not in read_filter:
+            return
+        elif (
+            not is_staff
+            and not is_owner
+            and not is_sponsor
+            and not is_donate
+            and _(self.language, "Regular") not in read_filter
+        ):
+            return
 
         if len(cleaned_text) < self.min_msg_length:
             return
         if len(cleaned_text) > self.max_msg_length:
             cleaned_text = cleaned_text[: self.max_msg_length] + "..."
 
-        cleaned_author = self.convert_numbers_to_words(cleaned_author)
-        cleaned_text = self.convert_numbers_to_words(cleaned_text)
+        cleaned_author = convert_numbers_to_words(cleaned_author, self.voice_language)
+        cleaned_text = convert_numbers_to_words(cleaned_text, self.voice_language)
 
         if self.read_author_names:
             cleaned_text = f"{transliteration(cleaned_author, self.voice_language)} {_(self.voice_language, 'said')} - {cleaned_text}"
@@ -1891,11 +1891,12 @@ class MainWindow(QMainWindow):
                             # put_yo=self.put_yo,
                         )
         except Exception as e:
-            self.add_sys_message(
-                author="text_to_speech()",
-                text=f"{_(self.language, "Error convert text to speech")}, {translate_text(str(e), self.language)}. TEXT: {text}",
-                status="error",
-            )
+            pass
+            # self.add_sys_message(
+            #     author="text_to_speech()",
+            #     text=f"{_(self.language, "Error convert text to speech")}, {translate_text(str(e), self.language)}. TEXT: {text}",
+            #     status="error",
+            # )
 
     def postprocess_audio(self, audio):
         """Postprocess audio: convert to numpy, normalize, apply volume and speed"""
@@ -1948,14 +1949,12 @@ class MainWindow(QMainWindow):
     def play_audio(self, audio_to_play):
         try:
             self._set_audio_indicator("🔴")
-            self._playback_abort_requested = False
             sd.play(audio_to_play, blocking=False)
             while True:
                 stream = sd.get_stream()
                 if stream is None or not stream.active:
                     break
-                if self._playback_abort_requested or self.is_paused:
-                    self._playback_abort_requested = False
+                if self.is_paused:
                     sd.stop(ignore_errors=True)
                     break
                 sleep(0.03)

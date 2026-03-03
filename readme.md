@@ -24,33 +24,23 @@ FJ Chat to Speech is an open-source desktop application that converts live chat 
 - `Arrow Up` / `Arrow Down` - Volume
 - `Space` - Pause/Play
 
-## How is the banned list formed?
+## System requirements
 
-Each toxic message is assigned a score. For example, if a message contains stop-words, it receives a score of `0.25`. The message is also processed through the Detoxify model, which assigns a toxicity level ranging from `0.0` to `1.0`. However, messages with a toxicity level below the value specified in the `Toxicity threshold` parameter are ignored.
+- `OS` - Windows, Linux or MacOS
+- `Memory` - 3GB RAM
 
-During the application's operation, statistics are accumulated for toxic users. If a user exceeds the value specified in the `Toxicity level for user ban` parameter, they are added to the banned list.
-
-- Messages from banned users will not be voiced.
-- Chat moderators and the channel owner cannot be banned.
-
-## Run from source
+### Linux
 
 ```bash
-git clone https://github.com/facejungle/fj_chat_to_speech.git
-cd fj_chat_to_speech
-
-pip install -r torch.requirements.txt
-pip install -r requirements.txt
-
-python main.py
+sudo apt install libportaudio2 portaudio19-dev python3-pyaudio libsndfile1 ffmpeg
 ```
 
-Notes:
+### MacOS
 
-- On first run, model-related files downloaded and cached.
-- The settings file is located in:
-  - Windows: `~\AppData\Roaming\FJ Chat to Speech`
-  - Linux or MacOS: `~/.fj_chat_to_speech`
+```bash
+brew install portaudio
+brew install ffmpeg
+```
 
 ## Connect to YouTube
 
@@ -66,7 +56,14 @@ Notes:
 4. Enter an active channel name or Twitch URL.
 5. Click `Connect`.
 
-The app stores access/refresh tokens in local settings and refreshes access tokens automatically when needed.
+## How is the banned list formed?
+
+Each toxic message is assigned a score. For example, if a message contains stop-words, it receives a score of `0.25`. The message is also processed through the Detoxify model, which assigns a toxicity level ranging from `0.0` to `1.0`. However, messages with a toxicity level below the value specified in the `Toxicity threshold` parameter are ignored.
+
+During the application's operation, statistics are accumulated for toxic users. If a user exceeds the value specified in the `Toxicity level for user ban` parameter, they are added to the banned list.
+
+- Messages from banned users will not be voiced.
+- Chat moderators and the channel owner cannot be banned.
 
 ## Troubleshooting
 
@@ -77,6 +74,27 @@ The app stores access/refresh tokens in local settings and refreshes access toke
 - YouTube connection fails:
   - Check that the stream is currently live.
   - Try pasting a direct video URL instead of a shortened link.
+
+Notes:
+
+- On first run, model-related files downloaded and cached.
+- The settings file is located in:
+  - Windows: `~\AppData\Roaming\FJ Chat to Speech`
+  - Linux or MacOS: `~/.fj_chat_to_speech`
+
+## Run from source
+
+Requirement: `Python 3.12`
+
+```bash
+git clone https://github.com/facejungle/fj_chat_to_speech.git
+cd fj_chat_to_speech
+
+pip install -r torch.requirements.txt
+pip install -r requirements.txt
+
+python main.py
+```
 
 ## Build
 

@@ -40,7 +40,7 @@ DEFAULTS = {
     "add_accents": True,
     "read_author_names": False,
     "read_platform_names": False,
-    "subscribers_only": False,
+    "read_filter": ("Regular", "Donation", "Sponsor", "Author", "Moderator"),
     "auto_translate": False,
     "buffer_maxsize": 5,
     "min_msg_length": 2,

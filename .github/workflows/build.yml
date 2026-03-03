@@ -44,6 +44,7 @@ jobs:
           }
 
       - name: Upload artifact for SignPath
+        id: upload_artifact
         uses: actions/upload-artifact@v4
         with:
           name: unsigned-windows-exe
@@ -57,22 +58,16 @@ jobs:
           organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
           project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY }}
-          github-artifact-id: ${{ steps.upload-artifact.outputs.artifact-id }}
+          github-artifact-id: ${{ steps.upload_artifact.outputs.artifact-id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           wait-for-completion: true
           output-artifact-directory: signed-artifact
-
-      - name: Download signed artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: signed-artifact
-          path: dist/signed
 
       - name: Upload signed Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: fj_chat_to_speech_windows
-          path: dist/signed/
+          path: signed-artifact/
           retention-days: 30
 
   build-linux:

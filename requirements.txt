@@ -1,9 +1,9 @@
-googletrans
+googletrans==4.0.2
 # google-api-python-client
 # google-auth-httplib2
 # google-auth-oauthlib
 # google-auth
-pytchat
+pytchat @ https://github.com/facejungle/pytchat/archive/refs/heads/master.zip#sha256=f6e5f31112339b5898b23ce8de398c5d1890d0daea5e8888ca9e6fc3c051957e
 
 # Speech deps
 sounddevice==0.5.5
@@ -11,8 +11,8 @@ num2words==0.5.14
 numpy==2.4.2
 scipy==1.17.0
 
-PyQt6
+PyQt6==6.10.2
 requests
-omegaconf
+omegaconf==2.3.0
 silero @ https://github.com/snakers4/silero-models/archive/refs/heads/master.zip#sha256=64dbc0dab75af504efa489d6ef5dd1de4257ffec34246774d75b1fef447623be
-detoxify
+detoxify==0.5.2

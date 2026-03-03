@@ -15,10 +15,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
 
-    permissions:
-      contents: read
-      packages: read
-      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -31,11 +27,38 @@ jobs:
       - name: Build with Python script
         run: python build.py
 
-      - name: Upload Windows artifact
+      - name: Get version from filename
+        id: get_version
+        shell: pwsh
+        run: |
+          $file = Get-ChildItem -Path dist -Filter "fj_chat_to_speech_*_windows.exe" | Select-Object -First 1
+          if ($file) {
+            $filename = $file.Name
+            Write-Host "Found file: $filename"
+            echo "filename=$filename" >> $env:GITHUB_OUTPUT
+            echo "fullpath=$($file.FullName)" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "No file found"
+            exit 1
+          }
+
+      - name: Submit to SignPath
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY }}
+          input-artifact-path: ${{ steps.get_version.outputs.fullpath }}
+          output-artifact-path: dist/${{ steps.get_version.outputs.filename }}
+          description: "Release ${{ github.ref_name }}"
+          wait-for-completion: true
+
+      - name: Upload signed Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fj-chat-to-speech-windows
-          path: dist/
+          name: fj_chat_to_speech_windows
+          path: dist/${{ steps.get_version.outputs.filename }}
           retention-days: 30
 
   build-linux:
@@ -69,7 +92,7 @@ jobs:
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fj-chat-to-speech-linux
+          name: fj_chat_to_speech_linux
           path: dist/
           retention-days: 30
 
@@ -99,7 +122,7 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fj-chat-to-speech-macos
+          name: fj_chat_to_speech_macos
           path: dist/
           retention-days: 30
 
@@ -122,9 +145,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/fj-chat-to-speech-windows/*
-            artifacts/fj-chat-to-speech-linux/*
-            artifacts/fj-chat-to-speech-macos/*
+            artifacts/fj_chat_to_speech_windows/*
+            artifacts/fj_chat_to_speech_linux/*
+            artifacts/fj_chat_to_speech_macos/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

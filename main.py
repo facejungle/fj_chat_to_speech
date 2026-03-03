@@ -49,6 +49,7 @@ import numpy as np
 from googletrans import Translator
 
 from app.chat_message import ChatMessageDelegate, ChatMessageListModel
+from app.menu_combo_check_box import MenuComboCheckBox
 from app.schema import MessageStatsTD, TwitchCredentialsTD
 from app.translations import (
     DEFAULT_LANGUAGE,
@@ -90,9 +91,7 @@ window_flag_fixed = (
     | Qt.WindowType.WindowTitleHint
     | Qt.WindowType.WindowCloseButtonHint
 )
-twitch_default_credentials = TwitchCredentialsTD(
-    client_id=None, access=None, refresh=None, nickname=None
-)
+twitch_default_credentials = TwitchCredentialsTD(client_id=None, access=None, refresh=None, nickname=None)
 _torch_module = None
 _torch_import_error = None
 _detoxify_class = None
@@ -138,7 +137,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_NAME + " (barmich2007)")
         self.setMinimumSize(1200, 600)
 
         self.root_widget = QWidget()
@@ -224,12 +223,8 @@ class MainWindow(QMainWindow):
             for voice in voices:
                 voice_action = QAction(voice, self)
                 voice_action.setCheckable(True)
-                voice_action.setChecked(
-                    voice == self.voice and voice_lang == self.voice_language
-                )
-                voice_action.triggered.connect(
-                    lambda checked, l=voice_lang, v=voice: self.voice_changed(l, v)
-                )
+                voice_action.setChecked(voice == self.voice and voice_lang == self.voice_language)
+                voice_action.triggered.connect(lambda checked, l=voice_lang, v=voice: self.voice_changed(l, v))
                 voice_lang_menu.addAction(voice_action)
 
         add_accents_action = QAction(_(self.language, "Add accents"), self)
@@ -244,9 +239,7 @@ class MainWindow(QMainWindow):
             lang_action = QAction(lang, self)
             lang_action.setCheckable(True)
             lang_action.setChecked(lang == self.language)
-            lang_action.triggered.connect(
-                lambda checked, l=lang: self.language_changed(l)
-            )
+            lang_action.triggered.connect(lambda checked, l=lang: self.language_changed(l))
             self.language_menu.addAction(lang_action)
 
     def setup_menu_bar(self):
@@ -283,31 +276,23 @@ class MainWindow(QMainWindow):
         stop_words_action.triggered.connect(self.on_stop_words_action)
         msg_settings_menu.addAction(stop_words_action)
 
-        delays_action = QAction(
-            _(self.language, "Delays and processing"), msg_settings_menu
-        )
+        delays_action = QAction(_(self.language, "Delays and processing"), msg_settings_menu)
         delays_action.triggered.connect(self.on_delays_settings_action)
         msg_settings_menu.addAction(delays_action)
 
-        read_authors_action = QAction(
-            _(self.language, "Read author names"), msg_settings_menu
-        )
+        read_authors_action = QAction(_(self.language, "Read author names"), msg_settings_menu)
         read_authors_action.setCheckable(True)
         read_authors_action.setChecked(self.read_author_names)
         read_authors_action.triggered.connect(self.toggle_read_author_names)
         msg_settings_menu.addAction(read_authors_action)
 
-        read_platform_action = QAction(
-            _(self.language, "Read platform name"), msg_settings_menu
-        )
+        read_platform_action = QAction(_(self.language, "Read platform name"), msg_settings_menu)
         read_platform_action.setCheckable(True)
         read_platform_action.setChecked(self.read_platform_names)
         read_platform_action.triggered.connect(self.toggle_read_platform_names)
         msg_settings_menu.addAction(read_platform_action)
 
-        auto_translate_action = QAction(
-            _(self.language, "Translate messages"), msg_settings_menu
-        )
+        auto_translate_action = QAction(_(self.language, "Translate messages"), msg_settings_menu)
         auto_translate_action.setCheckable(True)
         auto_translate_action.setChecked(self.auto_translate)
         auto_translate_action.triggered.connect(self.toggle_auto_translate)
@@ -325,9 +310,7 @@ class MainWindow(QMainWindow):
         yt_layout.addWidget(yt_label)
         self.yt_video_input = QLineEdit()
         self.yt_video_input.returnPressed.connect(self.on_click_yt_connect)
-        self.yt_video_input.setPlaceholderText(
-            "https://www.youtube.com/watch?v=VIDEO_ID or VIDEO_ID"
-        )
+        self.yt_video_input.setPlaceholderText("https://www.youtube.com/watch?v=VIDEO_ID or VIDEO_ID")
         yt_layout.addWidget(self.yt_video_input)
         self.connect_yt_button = QPushButton(_(self.language, "Connect"))
         self.connect_yt_button.clicked.connect(self.on_click_yt_connect)
@@ -343,9 +326,8 @@ class MainWindow(QMainWindow):
         twitch_layout.addWidget(twitch_label)
         self.twitch_input = QLineEdit()
         self.twitch_input.returnPressed.connect(self.on_click_connect_twitch)
-        self.twitch_input.setPlaceholderText(
-            "https://www.twitch.tv/CHANNEL_NAME or CHANNEL_NAME"
-        )
+        self.twitch_input.setPlaceholderText("https://www.twitch.tv/CHANNEL_NAME or CHANNEL_NAME")
+        self.twitch_input.setText("https://www.twitch.tv/barmich2007")
         twitch_layout.addWidget(self.twitch_input)
         self.connect_twitch_button = QPushButton(_(self.language, "Connect"))
         self.connect_twitch_button.clicked.connect(self.on_click_connect_twitch)
@@ -365,9 +347,7 @@ class MainWindow(QMainWindow):
 
     def setup_read_filter(self):
         items = [_(self.language, i) for i in DEFAULTS["read_filter"]]
-        self.read_filter_combo = MenuComboCheckBox(
-            _(self.language, "Read messages"), items
-        )
+        self.read_filter_combo = MenuComboCheckBox(_(self.language, "Read messages"), items)
         self.read_filter_combo.setSelected(self.read_filter)
         self.read_filter_combo.changed.connect(self.on_change_read_filter)
         self.control_layout.addWidget(self.read_filter_combo)
@@ -388,9 +368,7 @@ class MainWindow(QMainWindow):
         self.setup_read_filter()
 
         self.pause_button = QPushButton(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
+            _(self.language, "Stopped") if self.is_paused else _(self.language, "Playback...")
         )
         self.setup_pause_button_color()
         self.pause_button.clicked.connect(self.on_pause_clicked)
@@ -422,9 +400,7 @@ class MainWindow(QMainWindow):
         self.chat_text = QListView()
         self.chat_text.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
         self.chat_text.setSelectionMode(QListView.SelectionMode.NoSelection)
-        self.chat_text.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.chat_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chat_text.setWordWrap(True)
         self.chat_text.setUniformItemSizes(False)
         self.chat_text.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
@@ -478,9 +454,7 @@ class MainWindow(QMainWindow):
         self.speech_rate_slider = QSlider(Qt.Orientation.Horizontal)
         self.speech_rate_slider.setMinimum(50)
         self.speech_rate_slider.setMaximum(150)
-        self.speech_rate_slider.setValue(
-            int(self.speech_rate * 100)
-        )  # Convert to 50-150 range
+        self.speech_rate_slider.setValue(int(self.speech_rate * 100))  # Convert to 50-150 range
         self.speech_rate_slider.valueChanged.connect(self.speech_rate_changed)
         self.statusBar().addWidget(self.speech_rate_slider)
 
@@ -496,9 +470,7 @@ class MainWindow(QMainWindow):
         self.exit_chat_only_shortcut = QShortcut(QKeySequence("Esc"), self)
         self.exit_chat_only_shortcut.activated.connect(self.exit_chat_only_mode)
         self.toggle_chat_only_shortcut = QShortcut(QKeySequence("F11"), self)
-        self.toggle_chat_only_shortcut.activated.connect(
-            lambda: self.toggle_chat_only_mode(not self.chat_only_mode)
-        )
+        self.toggle_chat_only_shortcut.activated.connect(lambda: self.toggle_chat_only_mode(not self.chat_only_mode))
         self.pause_play_shortcut = QShortcut(QKeySequence("Space"), self)
         self.pause_play_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.pause_play_shortcut.activated.connect(self.on_pause_clicked)
@@ -507,21 +479,13 @@ class MainWindow(QMainWindow):
         self.volume_up_shortcut.activated.connect(lambda: self.change_volume_by_step(5))
         self.volume_down_shortcut = QShortcut(QKeySequence("Down"), self)
         self.volume_down_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.volume_down_shortcut.activated.connect(
-            lambda: self.change_volume_by_step(-5)
-        )
+        self.volume_down_shortcut.activated.connect(lambda: self.change_volume_by_step(-5))
         self.speech_rate_up_shortcut = QShortcut(QKeySequence("Right"), self)
         self.speech_rate_up_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.speech_rate_up_shortcut.activated.connect(
-            lambda: self.change_speech_rate_by_step(5)
-        )
+        self.speech_rate_up_shortcut.activated.connect(lambda: self.change_speech_rate_by_step(5))
         self.speech_rate_down_shortcut = QShortcut(QKeySequence("Left"), self)
-        self.speech_rate_down_shortcut.setContext(
-            Qt.ShortcutContext.ApplicationShortcut
-        )
-        self.speech_rate_down_shortcut.activated.connect(
-            lambda: self.change_speech_rate_by_step(-5)
-        )
+        self.speech_rate_down_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.speech_rate_down_shortcut.activated.connect(lambda: self.change_speech_rate_by_step(-5))
         self.font_size_changed(2)
         self.apply_chat_only_mode()
 
@@ -548,20 +512,12 @@ class MainWindow(QMainWindow):
 
     def on_pause_clicked(self):
         self.is_paused = not self.is_paused
-        self.pause_button.setText(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.pause_button.setText(_(self.language, "Stopped") if self.is_paused else _(self.language, "Playback..."))
         self.setup_pause_button_color()
         if self.is_paused:
-            self.statusBar().showMessage(
-                _(self.language, "Playback has been stopped"), 3000
-            )
+            self.statusBar().showMessage(_(self.language, "Playback has been stopped"), 3000)
         else:
-            self.statusBar().showMessage(
-                _(self.language, "Speech playback continued..."), 3000
-            )
+            self.statusBar().showMessage(_(self.language, "Speech playback continued..."), 3000)
 
     def language_changed(self, lang):
         self.language = lang
@@ -581,23 +537,15 @@ class MainWindow(QMainWindow):
         self.vol_label.setText(_(self.language, "Volume"))
         self.voice_label.setText(self.status_voice_text())
 
-        self.connect_yt_button.setText(
-            _(self.language, "Connected" if self.yt_is_connected else "Connect")
-        )
+        self.connect_yt_button.setText(_(self.language, "Connected" if self.yt_is_connected else "Connect"))
         # self.configure_yt_button.setText(_(self.language, "Configure"))
-        self.connect_twitch_button.setText(
-            _(self.language, "Connected" if self.twitch_is_connected else "Connect")
-        )
+        self.connect_twitch_button.setText(_(self.language, "Connected" if self.twitch_is_connected else "Connect"))
         self.configure_twitch_button.setText(_(self.language, "Configure"))
 
         # self.chat_header_label.setText(_(self.language, "Message Log"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
-        self.pause_button.setText(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.pause_button.setText(_(self.language, "Stopped") if self.is_paused else _(self.language, "Playback..."))
         self.clr_queue_button.setText((_(self.language, "Clear queue")))
 
     def voice_changed(self, lang, voice):
@@ -648,27 +596,17 @@ class MainWindow(QMainWindow):
         self.twitch_client_id_input = QLineEdit()
         entry_layout.addWidget(self.twitch_client_id_input, 1)
 
-        self.twitch_client_id_input.setPlaceholderText(
-            _(self.language, "Enter your client id")
-        )
+        self.twitch_client_id_input.setPlaceholderText(_(self.language, "Enter your client id"))
         if self.twitch_credentials["client_id"] is None:
-            self.twitch_client_id_input.returnPressed.connect(
-                self.on_click_twitch_save_settings
-            )
+            self.twitch_client_id_input.returnPressed.connect(self.on_click_twitch_save_settings)
             self.twitch_client_id_button = QPushButton(_(self.language, "Save"))
-            self.twitch_client_id_button.clicked.connect(
-                self.on_click_twitch_save_settings
-            )
+            self.twitch_client_id_button.clicked.connect(self.on_click_twitch_save_settings)
             entry_layout.addWidget(self.twitch_client_id_button)
         else:
-            self.twitch_client_id_input.setText(
-                "*" * len(self.twitch_credentials["client_id"])
-            )
+            self.twitch_client_id_input.setText("*" * len(self.twitch_credentials["client_id"]))
             self.twitch_client_id_input.setReadOnly(True)
             self.twitch_client_id_button = QPushButton(_(self.language, "Edit"))
-            self.twitch_client_id_button.clicked.connect(
-                self.on_click_twitch_edit_credential
-            )
+            self.twitch_client_id_button.clicked.connect(self.on_click_twitch_edit_credential)
             entry_layout.addWidget(self.twitch_client_id_button)
 
         client_id_help_text = QLabel(
@@ -711,9 +649,7 @@ class MainWindow(QMainWindow):
             root_layout = QVBoxLayout(root_widget)
             root_widget.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
 
-            continue_authorize_browser_text = QLabel(
-                _(self.language, "continue_authorize_browser")
-            )
+            continue_authorize_browser_text = QLabel(_(self.language, "continue_authorize_browser"))
             root_layout.addWidget(continue_authorize_browser_text)
 
             user_code_text = QLabel(str(user_code))
@@ -750,9 +686,7 @@ class MainWindow(QMainWindow):
         self.twitch_client_id_input.setReadOnly(True)
         self.twitch_client_id_input.returnPressed.disconnect()
         self.twitch_client_id_button.clicked.disconnect()
-        self.twitch_client_id_button.clicked.connect(
-            self.on_click_twitch_edit_credential
-        )
+        self.twitch_client_id_button.clicked.connect(self.on_click_twitch_edit_credential)
         self.twitch_client_id_button.setText(_(self.language, "Edit"))
 
         self.worker = AuthWorker(client_id=client_id, lang=self.language)
@@ -763,9 +697,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def on_click_twitch_edit_credential(self):
-        self.twitch_client_id_input.returnPressed.connect(
-            self.on_click_twitch_save_settings
-        )
+        self.twitch_client_id_input.returnPressed.connect(self.on_click_twitch_save_settings)
         self.twitch_client_id_input.setText(self.twitch_credentials["client_id"])
         self.twitch_client_id_input.setReadOnly(False)
         self.twitch_client_id_button.clicked.disconnect()
@@ -786,10 +718,7 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            if (
-                self.twitch_credentials["client_id"] is None
-                or self.twitch_credentials["access"] is None
-            ):
+            if self.twitch_credentials["client_id"] is None or self.twitch_credentials["access"] is None:
                 self.on_configure_twitch()
                 return
 
@@ -867,9 +796,7 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.ColorRole.Button, Qt.GlobalColor.darkGreen)
         palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
         self.connect_twitch_button.setPalette(palette)
-        self.add_sys_message(
-            author="Twitch", text=_(self.language, "chat_connected"), status="success"
-        )
+        self.add_sys_message(author="Twitch", text=_(self.language, "chat_connected"), status="success")
 
     def on_configure_yt(self):
         dlg = QDialog(self)
@@ -888,13 +815,9 @@ class MainWindow(QMainWindow):
         self.google_api_key_input = QLineEdit()
         entry_layout.addWidget(self.google_api_key_input, 1)
 
-        self.google_api_key_input.setPlaceholderText(
-            _(self.language, "Enter your API key")
-        )
+        self.google_api_key_input.setPlaceholderText(_(self.language, "Enter your API key"))
         if self.yt_credentials is None:
-            self.google_api_key_input.returnPressed.connect(
-                self.on_click_yt_save_settings
-            )
+            self.google_api_key_input.returnPressed.connect(self.on_click_yt_save_settings)
             self.google_api_key_button = QPushButton(_(self.language, "Save"))
             self.google_api_key_button.clicked.connect(self.on_click_yt_save_settings)
             entry_layout.addWidget(self.google_api_key_button)
@@ -982,9 +905,7 @@ class MainWindow(QMainWindow):
         self.yt_is_connected = True
         self.connect_yt_button.setEnabled(True)
 
-        self.add_sys_message(
-            author="YouTube", text=_(self.language, "chat_connected"), status="success"
-        )
+        self.add_sys_message(author="YouTube", text=_(self.language, "chat_connected"), status="success")
         self.connect_yt_button.setText(_(self.language, "Connected"))
         palette = self.connect_yt_button.palette()
         palette.setColor(QPalette.ColorRole.Button, Qt.GlobalColor.darkGreen)
@@ -1016,9 +937,7 @@ class MainWindow(QMainWindow):
         self.banned_text = QPlainTextEdit()
         self.banned_text.setPlainText("\n".join(self.banned_set))
 
-        self.banned_text.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.banned_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout.addWidget(self.banned_text, 1)
 
@@ -1047,9 +966,7 @@ class MainWindow(QMainWindow):
         self.stop_words_text = QPlainTextEdit()
         self.stop_words_text.setPlainText("\n".join(self.stop_words))
 
-        self.stop_words_text.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.stop_words_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         layout.addWidget(self.stop_words_text, 1)
 
@@ -1062,9 +979,7 @@ class MainWindow(QMainWindow):
 
     def on_save_stop_words(self):
         content = self.stop_words_text.toPlainText().strip()
-        self.stop_words = sorted(
-            tuple(set([w.strip() for w in content.splitlines() if w.strip()]))
-        )
+        self.stop_words = sorted(tuple(set([w.strip() for w in content.splitlines() if w.strip()])))
 
         with open(
             resource_path(f"spam_filter/{self.voice_language}.txt"),
@@ -1119,9 +1034,7 @@ class MainWindow(QMainWindow):
         toxic_sense_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(toxic_sense_v_layout)
 
-        self.toxic_sense_label_desc = QLabel(
-            _(self.language, "Toxicity threshold (1 = OFF)")
-        )
+        self.toxic_sense_label_desc = QLabel(_(self.language, "Toxicity threshold (1 = OFF)"))
         toxic_sense_v_layout.addWidget(self.toxic_sense_label_desc)
 
         toxic_sense_layout = QHBoxLayout()
@@ -1143,9 +1056,7 @@ class MainWindow(QMainWindow):
         ban_limit_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(ban_limit_v_layout)
 
-        self.ban_limit_label_desc = QLabel(
-            _(self.language, "Toxicity level for user ban")
-        )
+        self.ban_limit_label_desc = QLabel(_(self.language, "Toxicity level for user ban"))
         ban_limit_v_layout.addWidget(self.ban_limit_label_desc)
 
         ban_limit_layout = QHBoxLayout()
@@ -1233,9 +1144,7 @@ class MainWindow(QMainWindow):
         # speech_delay_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(speech_delay_v_layout)
 
-        self.speech_delay_label_desc = QLabel(
-            _(self.language, "Delay between messages")
-        )
+        self.speech_delay_label_desc = QLabel(_(self.language, "Delay between messages"))
         speech_delay_v_layout.addWidget(self.speech_delay_label_desc)
 
         speech_delay_layout = QHBoxLayout()
@@ -1321,10 +1230,7 @@ class MainWindow(QMainWindow):
             self.connections_widget.setVisible(not chat_only)
         if hasattr(self, "chat_header_widget"):
             self.chat_header_widget.setVisible(not chat_only)
-        if (
-            hasattr(self, "chat_only_action")
-            and self.chat_only_action.isChecked() != chat_only
-        ):
+        if hasattr(self, "chat_only_action") and self.chat_only_action.isChecked() != chat_only:
             self.chat_only_action.setChecked(chat_only)
 
     def toggle_auto_scroll(self, checked):
@@ -1349,22 +1255,17 @@ class MainWindow(QMainWindow):
 
         if file_path:
             file = QFile(file_path)
-            if file.open(
-                QIODevice.OpenModeFlag.WriteOnly | QIODevice.OpenModeFlag.Text
-            ):
+            if file.open(QIODevice.OpenModeFlag.WriteOnly | QIODevice.OpenModeFlag.Text):
                 file.write(log.encode("utf-8"))
                 file.close()
-                self.statusBar().showMessage(
-                    f"{_(self.language, "File saved")}: {file_path}", 3000
-                )
+                self.statusBar().showMessage(f"{_(self.language, "File saved")}: {file_path}", 3000)
 
     def chat_model_to_text(self):
         lines = []
         for message in self.chat_model.messages():
             text = str(message.get("text", "")).replace("\r\n", "\n")
             lines.append(
-                f"[{message.get('time', '')}] [{message.get('platform', '')}] "
-                f"{message.get('author', '')}: {text}"
+                f"[{message.get('time', '')}] [{message.get('platform', '')}] " f"{message.get('author', '')}: {text}"
             )
         return "\n".join(lines)
 
@@ -1379,9 +1280,7 @@ class MainWindow(QMainWindow):
         return "\n".join(lines)
 
     def chat_model_to_html(self):
-        rows = [
-            "<html><body style='background:#222;color:#fff;font-family:Arial,sans-serif;'>"
-        ]
+        rows = ["<html><body style='background:#222;color:#fff;font-family:Arial,sans-serif;'>"]
         for message in self.chat_model.messages():
             author = html.escape(str(message.get("author", "")))
             platform = html.escape(str(message.get("platform", "")))
@@ -1546,12 +1445,8 @@ class MainWindow(QMainWindow):
             self.speech_delay = settings.get("speech_delay", self.speech_delay)
             self.auto_scroll = settings.get("auto_scroll", self.auto_scroll)
             self.add_accents = settings.get("add_accents", self.add_accents)
-            self.read_author_names = settings.get(
-                "read_author_names", self.read_author_names
-            )
-            self.read_platform_names = settings.get(
-                "read_platform_names", self.read_platform_names
-            )
+            self.read_author_names = settings.get("read_author_names", self.read_author_names)
+            self.read_platform_names = settings.get("read_platform_names", self.read_platform_names)
             self.read_filter = settings.get("read_filter", self.read_filter)
             self.toxic_sense = settings.get("toxic_sense", self.toxic_sense)
             self.ban_limit = settings.get("ban_limit", self.ban_limit)
@@ -1560,9 +1455,7 @@ class MainWindow(QMainWindow):
             self.min_msg_length = settings.get("min_msg_length", self.min_msg_length)
             self.max_msg_length = settings.get("max_msg_length", self.max_msg_length)
             self.yt_credentials = settings.get("yt_credentials", self.yt_credentials)
-            self.twitch_credentials = settings.get(
-                "twitch_credentials", twitch_default_credentials
-            )
+            self.twitch_credentials = settings.get("twitch_credentials", twitch_default_credentials)
             if not isinstance(self.twitch_credentials, dict):
                 self.twitch_credentials = twitch_default_credentials
 
@@ -1612,9 +1505,7 @@ class MainWindow(QMainWindow):
         try:
             configure_torch_hub_cache()
             ensure_stdio_streams()
-            self.add_sys_message(
-                author="Detoxify", text=_(self.language, "detoxify_loading")
-            )
+            self.add_sys_message(author="Detoxify", text=_(self.language, "detoxify_loading"))
             detoxify_cls = _get_detoxify_class()
             cached_checkpoint = find_cached_detoxify_checkpoint("multilingual")
             if cached_checkpoint:
@@ -1632,10 +1523,7 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             error_text = str(e)
-            if (
-                "PytorchStreamReader failed reading zip archive: failed finding central directory"
-                in error_text
-            ):
+            if "PytorchStreamReader failed reading zip archive: failed finding central directory" in error_text:
                 if cached_checkpoint and os.path.isfile(cached_checkpoint):
                     try:
                         self.add_sys_message(
@@ -1713,9 +1601,7 @@ class MainWindow(QMainWindow):
             return False
         finally:
             try:
-                silero_catalog_path = os.path.join(
-                    os.getcwd(), "latest_silero_models.yml"
-                )
+                silero_catalog_path = os.path.join(os.getcwd(), "latest_silero_models.yml")
                 os.remove(silero_catalog_path)
             except OSError:
                 pass

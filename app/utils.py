@@ -8,6 +8,7 @@ import sys
 import importlib
 
 import num2words
+import urllib
 
 
 from app.constants import APP_NAME
@@ -75,9 +76,7 @@ def get_user_data_dir() -> str:
         appdata = os.getenv("APPDATA")
         if appdata:
             return os.path.join(appdata, APP_NAME)
-    return os.path.join(
-        os.path.expanduser("~"), f".{APP_NAME.lower().replace(" ", "_")}"
-    )
+    return os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower().replace(" ", "_")}")
 
 
 def get_settings_path() -> str:
@@ -210,7 +209,7 @@ def clear_detoxify_checkpoint_cache(model_type="multilingual"):
             pass
 
 
-def clean_symbol_spam(text: str):
+def clean_symbol_spam(text: str) -> str:
     """Drop tokens that look like repetitive gibberish spam."""
     token = str(text or "").strip()
     if len(token) < 6:
@@ -263,7 +262,7 @@ def clean_symbol_spam(text: str):
     return text
 
 
-def clean_message(text, ui_lang):
+def clean_message(text: str, ui_lang: str) -> str:
     """Clean message from garbage"""
 
     text = str(text or "")
@@ -273,26 +272,22 @@ def clean_message(text, ui_lang):
 
     emoji_pattern = re.compile(
         "["
-        "\U0001f1e6-\U0001f1ff"  # flags
-        "\U0001f300-\U0001f5ff"  # symbols & pictographs
-        "\U0001f600-\U0001f64f"  # emoticons
-        "\U0001f680-\U0001f6ff"  # transport & map
-        "\U0001f700-\U0001f77f"
-        "\U0001f780-\U0001f7ff"
-        "\U0001f800-\U0001f8ff"
-        "\U0001f900-\U0001f9ff"  # supplemental symbols
-        "\U0001fa00-\U0001faff"
-        "\U00002700-\U000027bf"
-        "\U00002600-\U000026ff"
-        "\U000024c2-\U0001f251"
+        "\U0001f600-\U0001f64f"  # Emoticons
+        "\U0001f300-\U0001f5ff"  # Symbols & pictographs
+        "\U0001f680-\U0001f6ff"  # Transport & map symbols
+        "\U0001f700-\U0001f77f"  # Alchemical symbols
+        "\U0001f780-\U0001f7ff"  # Geometric shapes
+        "\U0001f800-\U0001f8ff"  # Supplemental arrows
+        "\U0001f900-\U0001f9ff"  # Supplemental symbols
+        "\U0001fa00-\U0001fa6f"  # Chess symbols
+        "\U0001fa70-\U0001faff"  # Symbols and pictographs extended
+        "\U00002702-\U000027b0"  # Dingbats
+        "\U000024c2-\U0001f251"  # Enclosed characters
         "]+",
         flags=re.UNICODE,
     )
     text = emoji_pattern.sub("", text)
-    # Remove emoji glue/modifiers that can remain after stripping main codepoints.
     text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
-
-    # text = re.sub(r"[^\w\s\.\,\!\?\-\:\'\"\(\)]", " ", text)
 
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
@@ -303,10 +298,6 @@ def clean_message(text, ui_lang):
         if cleaned_text:
             text_arr.append(cleaned_text)
     return " ".join(text_arr)
-
-
-def transliteration(text: str, lang: str):
-    pass
 
 
 @lru_cache
@@ -335,7 +326,7 @@ def avatar_colors_from_name(name: str):
     return bg, fg
 
 
-def convert_numbers_to_words(text, lang):
+def convert_numbers_to_words(text: str, lang: str) -> str:
     """Convert numbers to text representation"""
 
     def replace_number(match):
@@ -349,19 +340,107 @@ def convert_numbers_to_words(text, lang):
             elif "," in num:
                 parts = num.split(",")
                 return num2words(int("".join(parts)), lang=lang)
-                # integer_part = num2words(int(parts[0]), lang=lang)
-                # fractional_part = num2words(int(parts[1]), lang=lang)
-                # return f"{integer_part} {_(lang, "comma")} {fractional_part}"
             else:
                 return num2words(int(num), lang=lang)
-        except Exception as e:
-            # self.add_sys_message(
-            #     author="_translate_text()",
-            #     text=f"{_(self.language, 'Error convert num to word')}. {e}",
-            #     status="error",
-            # )
+        except Exception:
             return num
 
     number_pattern = r"-?\d+(?:[.,]\d+)?"
     converted_text = re.sub(number_pattern, replace_number, text)
     return converted_text
+
+
+def parse_youtube_video_id(url: str) -> str | None:
+    try:
+        if url and "/" not in url and "?" not in url and "#" not in url and "." not in url:
+            return url
+
+        if url.startswith("watch?v="):
+            return url.removeprefix("watch?v=")
+
+        has_scheme = "://" in url
+        parsed = urllib.parse.urlparse(url)
+
+        if not has_scheme:
+            path_parts = parsed.path.split("/")
+            if path_parts:
+                possible_domain = path_parts[0].lower()
+                allowed_domains = {
+                    "youtube.com",
+                    "www.youtube.com",
+                    "m.youtube.com",
+                    "youtu.be",
+                    "studio.youtube.com",
+                }
+
+                if possible_domain in allowed_domains:
+                    netloc = possible_domain
+                    remaining_path = "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else ""
+                    query = parsed.query
+
+                    if netloc == "youtu.be":
+                        video_id = remaining_path[1:] if remaining_path else None
+
+                    elif netloc in ["youtube.com", "www.youtube.com", "m.youtube.com"]:
+                        if remaining_path in ["/watch", "/watch/"]:
+                            query_dict = urllib.parse.parse_qs(query)
+                            video_id = query_dict.get("v", [None])[0]
+
+                        elif remaining_path.startswith("/shorts/"):
+                            video_id = remaining_path.split("/")[-1]
+
+                        elif remaining_path.startswith("/embed/"):
+                            video_id = remaining_path.split("/")[-1]
+
+                    elif netloc == "studio.youtube.com" and "/video/" in remaining_path:
+                        path_parts_clean = [part for part in remaining_path.split("/") if part]
+                        if "video" in path_parts_clean:
+                            video_index = path_parts_clean.index("video")
+                            if video_index + 1 < len(path_parts_clean):
+                                video_id = path_parts_clean[video_index + 1]
+
+                    if video_id:
+                        return video_id
+
+        netloc = parsed.netloc.split(":")[0].lower()
+        allowed_domains = {
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "youtu.be",
+            "studio.youtube.com",
+        }
+
+        if netloc not in allowed_domains:
+            return
+
+        video_id = None
+
+        if netloc == "youtu.be":
+            video_id = parsed.path[1:]
+
+        elif netloc in ["youtube.com", "www.youtube.com", "m.youtube.com"]:
+            if parsed.path in ["/watch", "/watch/"]:
+                query = urllib.parse.parse_qs(parsed.query)
+                video_id = query.get("v", [None])[0]
+
+            elif parsed.path.startswith("/shorts/"):
+                video_id = parsed.path.split("/")[-1]
+
+            elif parsed.path.startswith("/embed/"):
+                video_id = parsed.path.split("/")[-1]
+
+        elif netloc == "studio.youtube.com" and "/video/" in parsed.path:
+            path_parts = [part for part in parsed.path.split("/") if part]
+            if "video" in path_parts:
+                video_index = path_parts.index("video")
+                if video_index + 1 < len(path_parts):
+                    video_id = path_parts[video_index + 1]
+
+        if not video_id:
+            return
+
+        return video_id
+
+    except Exception:
+        return

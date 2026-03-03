@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
-        self.setWindowTitle(APP_NAME + " (barmich2007)")
+        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1200, 600)
 
         self.root_widget = QWidget()
@@ -327,7 +327,6 @@ class MainWindow(QMainWindow):
         self.twitch_input = QLineEdit()
         self.twitch_input.returnPressed.connect(self.on_click_connect_twitch)
         self.twitch_input.setPlaceholderText("https://www.twitch.tv/CHANNEL_NAME or CHANNEL_NAME")
-        self.twitch_input.setText("https://www.twitch.tv/barmich2007")
         twitch_layout.addWidget(self.twitch_input)
         self.connect_twitch_button = QPushButton(_(self.language, "Connect"))
         self.connect_twitch_button.clicked.connect(self.on_click_connect_twitch)
@@ -417,6 +416,8 @@ class MainWindow(QMainWindow):
         self._flush_timer.start(100)
 
     def setup_status_bar(self):
+        self.statusBar().setStyleSheet("QStatusBar::item { border: none; }")
+
         self.version_label = QLabel(f"v{APP_VERSION}")
         self.version_label.setContentsMargins(PADDING, 0, PADDING, 10)
         self.statusBar().addWidget(self.version_label)
@@ -1888,7 +1889,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    app.setStyle("Darwin")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

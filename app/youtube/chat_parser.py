@@ -5,6 +5,7 @@ from pytchat.core import PytchatCore
 import urllib
 
 from app.translations import _, translate_text
+from app.utils import parse_youtube_video_id
 
 
 class YouTubeChatParser:
@@ -35,7 +36,7 @@ class YouTubeChatParser:
         self.lang = lang
 
         self.is_connected = False
-        self.video_id = self._parse_video_id(url)
+        self.video_id = parse_youtube_video_id(url)
 
     def _stop_chat(self, chat):
         if not chat:
@@ -49,6 +50,10 @@ class YouTubeChatParser:
 
     def _create_chat(self) -> PytchatCore:
         use_interruptable = current_thread() is main_thread()
+
+        if not self.video_id:
+            raise AttributeError(_(self.lang, "not_determine_video_id"))
+
         return pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
 
     def _build_message_payload(self, message):
@@ -148,9 +153,7 @@ class YouTubeChatParser:
             self._stream_chat(chat)
 
         except Exception as e:
-            self.on_error(
-                f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
-            )
+            self.on_error(f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}")
 
         finally:
             self._stop_chat(chat)
@@ -164,33 +167,3 @@ class YouTubeChatParser:
     def run(self):
         th = Thread(target=self._connect, daemon=True)
         th.start()
-
-    def _parse_video_id(self, url):
-        try:
-            video_id = url
-            if url.startswith("watch?v="):
-                url = url.removeprefix("watch?v=")
-            elif "youtube.com" in url or "youtu.be" in url:
-                parsed = urllib.parse.urlparse(url)
-                if "youtu.be" in parsed.netloc:
-                    video_id = parsed.path[1:]
-                elif "watch" in parsed.path:
-                    query = urllib.parse.parse_qs(parsed.query)
-                    video_id = query.get("v", [None])[0]
-                elif "embed" in parsed.path:
-                    video_id = parsed.path.split("/")[-1]
-                elif "studio.youtube.com" in parsed.netloc and "/video/" in parsed.path:
-                    path_parts = [part for part in parsed.path.split("/") if part]
-                    if "video" in path_parts:
-                        video_index = path_parts.index("video")
-                        if video_index + 1 < len(path_parts):
-                            video_id = path_parts[video_index + 1]
-
-        except Exception as e:
-            self.on_error(
-                f"{_(self.lang, "not_determine_video_id")}. {translate_text(str(e), self.lang)}"
-            )
-            self.disconnect()
-            return
-
-        return video_id

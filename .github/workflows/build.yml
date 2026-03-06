@@ -14,8 +14,6 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    environment: release-signing
-
     steps:
       - uses: actions/checkout@v4
 
@@ -28,47 +26,71 @@ jobs:
       - name: Build with Python script
         run: python build.py
 
-      - name: Get version from filename
-        id: get_version
-        shell: pwsh
-        run: |
-          $file = Get-ChildItem -Path dist -Filter "fj_chat_to_speech_*_windows.exe" | Select-Object -First 1
-          if ($file) {
-            $filename = $file.Name
-            Write-Host "Found file: $filename"
-            echo "filename=$filename" >> $env:GITHUB_OUTPUT
-            echo "fullpath=$($file.FullName)" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Host "No file found"
-            exit 1
-          }
-
-      - name: Upload artifact for SignPath
-        id: upload_artifact
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-windows-exe
-          path: ${{ steps.get_version.outputs.fullpath }}
-          retention-days: 1
-
-      - name: Submit to SignPath
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
-          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY }}
-          github-artifact-id: ${{ steps.upload_artifact.outputs.artifact-id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-for-completion: true
-          output-artifact-directory: signed-artifact
-
-      - name: Upload signed Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fj_chat_to_speech_windows
-          path: signed-artifact/
+          name: fj-chat-to-speech-windows
+          path: dist/
           retention-days: 30
+  # build-windows:
+  #   runs-on: windows-latest
+  #   environment: release-signing
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
+  #         cache: "pip"
+
+  #     - name: Build with Python script
+  #       run: python build.py
+
+  #     - name: Get version from filename
+  #       id: get_version
+  #       shell: pwsh
+  #       run: |
+  #         $file = Get-ChildItem -Path dist -Filter "fj_chat_to_speech_*_windows.exe" | Select-Object -First 1
+  #         if ($file) {
+  #           $filename = $file.Name
+  #           Write-Host "Found file: $filename"
+  #           echo "filename=$filename" >> $env:GITHUB_OUTPUT
+  #           echo "fullpath=$($file.FullName)" >> $env:GITHUB_OUTPUT
+  #         } else {
+  #           Write-Host "No file found"
+  #           exit 1
+  #         }
+
+  #     - name: Upload artifact for SignPath
+  #       id: upload_artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: unsigned-windows-exe
+  #         path: ${{ steps.get_version.outputs.fullpath }}
+  #         retention-days: 1
+
+  #     - name: Submit to SignPath
+  #       uses: signpath/github-action-submit-signing-request@v2
+  #       with:
+  #         api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+  #         organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+  #         project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+  #         signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY }}
+  #         github-artifact-id: ${{ steps.upload_artifact.outputs.artifact-id }}
+  #         github-token: ${{ secrets.GITHUB_TOKEN }}
+  #         wait-for-completion: true
+  #         wait-for-completion-timeout-in-seconds: 3600
+  #         service-unavailable-timeout-in-seconds: 3600
+  #         output-artifact-directory: signed-artifact
+
+  #     - name: Upload signed Windows artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: fj_chat_to_speech_windows
+  #         path: signed-artifact/
+  #         retention-days: 30
 
   build-linux:
     runs-on: ubuntu-latest

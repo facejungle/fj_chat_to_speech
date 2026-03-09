@@ -32,7 +32,7 @@ class AuthWorker(QThread):
             if device_response.status_code != 200:
                 error_msg = device_data.get("message", "")
                 self.error_signal.emit(
-                    f"{_(self.lang, "Failed to get a code")}. {error_msg}"
+                    f"{_(self.lang, 'Failed to get a code')}. {error_msg}"
                 )
                 return
 
@@ -137,6 +137,12 @@ class AuthWorker(QThread):
 
     @staticmethod
     def refresh_access_token(client_id, refresh_token, lang="en"):
+        refresh_token = str(refresh_token or "").strip()
+        if not refresh_token or refresh_token.lower() == "none":
+            raise RuntimeError(
+                f"{_(lang, 'Failed to refresh token')}: refresh_token {_(lang, 'missing')}"
+            )
+
         response = requests.post(
             "https://id.twitch.tv/oauth2/token",
             data={
@@ -161,3 +167,26 @@ class AuthWorker(QThread):
             )
 
         return access_token, new_refresh_token
+
+    @staticmethod
+    def is_access_token_valid(access_token):
+        access_token = str(access_token or "").strip()
+        if not access_token or access_token.lower() == "none":
+            return False
+
+        try:
+            response = requests.get(
+                "https://id.twitch.tv/oauth2/validate",
+                headers={"Authorization": f"OAuth {access_token}"},
+                timeout=10,
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    @staticmethod
+    def ensure_valid_access_token(client_id, access_token, refresh_token, lang="en"):
+        if AuthWorker.is_access_token_valid(access_token):
+            return access_token, refresh_token
+
+        return AuthWorker.refresh_access_token(client_id, refresh_token, lang)

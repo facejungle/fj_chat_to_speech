@@ -1,4 +1,4 @@
-from logging import Logger
+from logging import DEBUG, Formatter, Logger, StreamHandler
 import os
 from random import randint
 import sys
@@ -9,9 +9,12 @@ import gc
 import json
 import html
 import threading
-import importlib
 from time import sleep
 import hashlib
+from typing import TypedDict
+
+from detoxify import Detoxify
+import detoxify.detoxify as detoxify_impl
 
 import sounddevice as sd
 from PyQt6.QtWidgets import (
@@ -47,6 +50,7 @@ from PyQt6.QtGui import QShortcut, QKeySequence
 from scipy.signal import resample
 import numpy as np
 from googletrans import Translator
+import torch
 
 from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 from app.menu_combo_check_box import MenuComboCheckBox
@@ -71,15 +75,16 @@ from app.constants import (
 from app.utils import (
     avatar_colors_from_name,
     clean_message,
-    clear_detoxify_checkpoint_cache,
+    clear_cache_detoxify,
     configure_torch_hub_cache,
+    contain_words_or_nums,
+    contains_stop_words,
     convert_numbers_to_words,
-    ensure_stdio_streams,
+    detoxify_get_model_and_tokenizer_local_only,
     find_cached_detoxify_checkpoint,
     find_cached_silero_repo,
     get_settings_path,
     icon_path,
-    prefer_cached_silero_package,
     resource_path,
 )
 from app.youtube.chat_parser import YouTubeChatParser
@@ -92,44 +97,31 @@ window_flag_fixed = (
     | Qt.WindowType.WindowCloseButtonHint
 )
 twitch_default_credentials = TwitchCredentialsTD(client_id=None, access=None, refresh=None, nickname=None)
-_torch_module = None
-_torch_import_error = None
-_detoxify_class = None
-_detoxify_import_error = None
-
-
-def _get_torch():
-    global _torch_module, _torch_import_error
-    if _torch_module is not None:
-        return _torch_module
-    if _torch_import_error is not None:
-        raise _torch_import_error
-
-    try:
-        _torch_module = importlib.import_module("torch")
-        return _torch_module
-    except Exception as e:
-        _torch_import_error = e
-        raise
-
-
-def _get_detoxify_class():
-    global _detoxify_class, _detoxify_import_error
-    if _detoxify_class is not None:
-        return _detoxify_class
-    if _detoxify_import_error is not None:
-        raise _detoxify_import_error
-
-    try:
-        detoxify_module = importlib.import_module("detoxify")
-        _detoxify_class = detoxify_module.Detoxify
-        return _detoxify_class
-    except Exception as e:
-        _detoxify_import_error = e
-        raise
 
 
 logger = Logger("main")
+# logger.setLevel(DEBUG)
+
+# handler = StreamHandler()
+# handler.setLevel(DEBUG)
+
+# formatter = Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# handler.setFormatter(formatter)
+
+# logger.addHandler(handler)
+
+torch.set_num_threads(max(1, os.cpu_count() or 1))
+
+
+class ChatMessage(TypedDict):
+    msg_id: str
+    platform: str
+    author: str
+    message: str
+    is_sponsor: bool
+    is_staff: bool
+    is_owner: bool
+    is_donate: bool
 
 
 class MainWindow(QMainWindow):
@@ -182,13 +174,16 @@ class MainWindow(QMainWindow):
         self.buffer_maxsize = DEFAULTS["buffer_maxsize"]
         self._pending_messages = deque()
         self._pending_ui_updates = deque()
+        self._pending_status_messages = deque()
         self.toxic_dict = defaultdict(float)
         self.banned_set = set()
         self.processed_messages = set()
+        self._cache_clear_in_progress = False
 
         self.load_settings()
 
         self.audio_queue = Queue(maxsize=self.buffer_maxsize)
+        self.process_message_queue = Queue()
 
         self.setup_ui()
 
@@ -198,19 +193,22 @@ class MainWindow(QMainWindow):
         self.translator = Translator()
         self.translator_lock = threading.Lock()
 
-        self._background_services_started = False
         QTimer.singleShot(0, self.start_background_services)
 
     def start_background_services(self):
-        if self._background_services_started:
-            return
-        self._background_services_started = True
-
-        threading.Thread(target=self.init_silero, daemon=True).start()
-        if self.toxic_sense < 1.0:
-            threading.Thread(target=self.init_detoxify, daemon=True).start()
         threading.Thread(target=self.process_audio_loop, daemon=True).start()
-        # threading.Thread(target=self.process_msg_buffer_loop, daemon=True).start()
+        threading.Thread(target=self.process_messages_loop, daemon=True).start()
+        threading.Thread(target=self.init_silero, daemon=True).start()
+
+        if self.toxic_sense >= 1.0:
+            self.add_sys_message(
+                author="Detoxify",
+                text=f"{_(self.language, 'Toxicity threshold')} >= 1.0, {_(self.language, 'skip load')}",
+                status="warning",
+            )
+            return
+        else:
+            threading.Thread(target=self.init_detoxify, daemon=True).start()
 
     # === UI setup ===
 
@@ -259,6 +257,14 @@ class MainWindow(QMainWindow):
         msg_log_text_action = QAction("Text", export_log_action)
         msg_log_text_action.triggered.connect(lambda: self.export_log("text"))
         export_log_action.addAction(msg_log_text_action)
+
+        load_models_action = QAction(_(self.language, "Load models"), file_menu)
+        load_models_action.triggered.connect(self.on_load_models_action)
+        file_menu.addAction(load_models_action)
+
+        reset_settings_action = QAction(_(self.language, "Reset settings"), file_menu)
+        reset_settings_action.triggered.connect(self.on_reset_settings_action)
+        file_menu.addAction(reset_settings_action)
 
         self.language_menu = menu_bar.addMenu(_(self.language, "Language"))
         self.setup_language_menu()
@@ -339,6 +345,7 @@ class MainWindow(QMainWindow):
     def setup_pause_button_color(self):
         palette = self.pause_button.palette()
         if self.is_paused:
+            palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
             palette.setColor(QPalette.ColorRole.Button, Qt.GlobalColor.darkRed)
             self.pause_button.setPalette(palette)
         else:
@@ -618,18 +625,7 @@ class MainWindow(QMainWindow):
 
         self.dlg.exec()
 
-    def on_click_twitch_save_settings(self):
-        # if self.twitch_credentials["client_id"] is not None:
-        #     res = QMessageBox.question(
-        #         self,
-        #         _(self.language, "Twitch account"),
-        #         _(self.language, "twitch_save_settings_warning")
-        #     )
-        #     if res != QMessageBox.StandardButton.Yes:
-        #         return
-
-        client_id = self.twitch_client_id_input.text()
-
+    def _start_twitch_device_auth(self, client_id):
         def on_finish():
             if getattr(self, "dlg", False) and self.dlg:
                 self.dlg.close()
@@ -658,7 +654,7 @@ class MainWindow(QMainWindow):
             user_code_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
             root_layout.addWidget(user_code_text, 1)
 
-            expires_in_text = QLabel(f"{_(self.language, "expires_in")}: {expires_in}")
+            expires_in_text = QLabel(f"{_(self.language, 'expires_in')}: {expires_in}")
             root_layout.addWidget(expires_in_text)
             root_layout.setContentsMargins(0, 0, 0, PADDING)
 
@@ -683,19 +679,32 @@ class MainWindow(QMainWindow):
             )
             on_finish()
 
-        self.twitch_client_id_input.setText("*" * len(client_id))
-        self.twitch_client_id_input.setReadOnly(True)
-        self.twitch_client_id_input.returnPressed.disconnect()
-        self.twitch_client_id_button.clicked.disconnect()
-        self.twitch_client_id_button.clicked.connect(self.on_click_twitch_edit_credential)
-        self.twitch_client_id_button.setText(_(self.language, "Edit"))
-
         self.worker = AuthWorker(client_id=client_id, lang=self.language)
         self.worker.user_code_signal.connect(on_user_code)
         self.worker.token_signal.connect(on_token_received)
         self.worker.error_signal.connect(on_error)
         self.worker.finished.connect(on_finish)
         self.worker.start()
+
+    def on_click_twitch_save_settings(self):
+        # if self.twitch_credentials["client_id"] is not None:
+        #     res = QMessageBox.question(
+        #         self,
+        #         _(self.language, "Twitch account"),
+        #         _(self.language, "twitch_save_settings_warning")
+        #     )
+        #     if res != QMessageBox.StandardButton.Yes:
+        #         return
+
+        client_id = self.twitch_client_id_input.text()
+
+        self.twitch_client_id_input.setText("*" * len(client_id))
+        self.twitch_client_id_input.setReadOnly(True)
+        self.twitch_client_id_input.returnPressed.disconnect()
+        self.twitch_client_id_button.clicked.disconnect()
+        self.twitch_client_id_button.clicked.connect(self.on_click_twitch_edit_credential)
+        self.twitch_client_id_button.setText(_(self.language, "Edit"))
+        self._start_twitch_device_auth(client_id)
 
     def on_click_twitch_edit_credential(self):
         self.twitch_client_id_input.returnPressed.connect(self.on_click_twitch_save_settings)
@@ -719,18 +728,21 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            if self.twitch_credentials["client_id"] is None or self.twitch_credentials["access"] is None:
+            client_id = str(self.twitch_credentials.get("client_id") or "").strip()
+            if not client_id or client_id.lower() == "none":
                 self.on_configure_twitch()
                 return
 
             def on_expiries_access():
-                access, refresh = AuthWorker.refresh_access_token(
+                access, refresh = AuthWorker.ensure_valid_access_token(
                     self.twitch_credentials["client_id"],
+                    self.twitch_credentials["access"],
                     self.twitch_credentials["refresh"],
                     self.language,
                 )
                 self.twitch_credentials["access"] = access
                 self.twitch_credentials["refresh"] = refresh
+                self.save_settings()
                 return access
 
             def on_msg(
@@ -742,19 +754,37 @@ class MainWindow(QMainWindow):
                 is_owner=False,
                 is_donate=False,
             ):
-                self.process_chat_message(
-                    msg_id=msg_id,
-                    platform="Twitch",
-                    author=author,
-                    message=msg,
-                    is_sponsor=is_sponsor,
-                    is_staff=is_staff,
-                    is_owner=is_owner,
-                    is_donate=is_donate,
+                self.process_message_queue.put_nowait(
+                    ChatMessage(
+                        msg_id=msg_id,
+                        platform="Twitch",
+                        author=author,
+                        message=msg,
+                        is_sponsor=is_sponsor,
+                        is_staff=is_staff,
+                        is_owner=is_owner,
+                        is_donate=is_donate,
+                    )
                 )
 
             def on_error(err):
                 self.add_sys_message(author="Twitch", text=err, status="error")
+
+            try:
+                (
+                    self.twitch_credentials["access"],
+                    self.twitch_credentials["refresh"],
+                ) = AuthWorker.ensure_valid_access_token(
+                    self.twitch_credentials["client_id"],
+                    self.twitch_credentials["access"],
+                    self.twitch_credentials["refresh"],
+                    self.language,
+                )
+                self.save_settings()
+            except Exception as e:
+                on_error(translate_text(str(e), self.language))
+                self._start_twitch_device_auth(self.twitch_credentials["client_id"])
+                return
 
             self.twitch_input.setReadOnly(True)
             self.connect_twitch_button.setEnabled(False)
@@ -851,10 +881,6 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            # if self.yt_credentials is None:
-            #     self.on_configure_yt()
-            #     return
-
             if not self.model:
                 res = QMessageBox.question(
                     self,
@@ -873,23 +899,23 @@ class MainWindow(QMainWindow):
                 is_owner=False,
                 is_donate=False,
             ):
-                self.process_chat_message(
-                    msg_id=msg_id,
-                    platform="YouTube",
-                    author=author,
-                    message=msg,
-                    is_sponsor=is_sponsor,
-                    is_staff=is_staff,
-                    is_owner=is_owner,
-                    is_donate=is_donate,
+                self.process_message_queue.put_nowait(
+                    ChatMessage(
+                        msg_id=msg_id,
+                        platform="YouTube",
+                        author=author,
+                        message=msg,
+                        is_sponsor=is_sponsor,
+                        is_staff=is_staff,
+                        is_owner=is_owner,
+                        is_donate=is_donate,
+                    )
                 )
 
             def on_error(err):
                 self.add_sys_message(author="YouTube", text=err, status="error")
 
-            self.connect_yt_button.setText(_(self.language, "Connecting"))
-            self.yt_video_input.setReadOnly(True)
-            self.connect_yt_button.setEnabled(False)
+            self.on_reconnect_yt()
 
             self.youtube = YouTubeChatParser(
                 url=video_id,
@@ -897,6 +923,7 @@ class MainWindow(QMainWindow):
                 on_disconnect=self.on_disconnect_yt,
                 on_message=on_msg,
                 on_error=on_error,
+                on_reconnect=self.on_reconnect_yt,
                 lang=self.language,
             )
 
@@ -926,6 +953,13 @@ class MainWindow(QMainWindow):
         )
         self.connect_yt_button.setText(_(self.language, "Connect"))
         self.connect_yt_button.setPalette(self.style().standardPalette())
+
+    def on_reconnect_yt(self):
+        self.connect_yt_button.setPalette(self.style().standardPalette())
+        self.connect_yt_button.setText(_(self.language, "Connecting"))
+
+        self.yt_video_input.setReadOnly(True)
+        self.connect_yt_button.setEnabled(False)
 
     def on_list_of_banned_action(self):
         dlg = QDialog(self)
@@ -980,7 +1014,7 @@ class MainWindow(QMainWindow):
 
     def on_save_stop_words(self):
         content = self.stop_words_text.toPlainText().strip()
-        self.stop_words = sorted(tuple(set([w.strip() for w in content.splitlines() if w.strip()])))
+        self.stop_words = sorted(tuple(set([w.lower().strip() for w in content.splitlines() if w.strip()])))
 
         with open(
             resource_path(f"spam_filter/{self.voice_language}.txt"),
@@ -990,7 +1024,7 @@ class MainWindow(QMainWindow):
             f.write("\n".join(self.stop_words) + "\n")
 
         self.statusBar().showMessage(
-            f"{_(self.language, "Saved")} {len(self.stop_words)} {_(self.language, "stop words")}",
+            f"{_(self.language, 'Saved')} {len(self.stop_words)} {_(self.language, 'stop words')}",
             3000,
         )
 
@@ -1035,7 +1069,7 @@ class MainWindow(QMainWindow):
         toxic_sense_v_layout.setContentsMargins(0, 0, 0, PADDING)
         root_layout.addLayout(toxic_sense_v_layout)
 
-        self.toxic_sense_label_desc = QLabel(_(self.language, "Toxicity threshold (1 = OFF)"))
+        self.toxic_sense_label_desc = QLabel(_(self.language, "Toxicity threshold"))
         toxic_sense_v_layout.addWidget(self.toxic_sense_label_desc)
 
         toxic_sense_layout = QHBoxLayout()
@@ -1183,11 +1217,14 @@ class MainWindow(QMainWindow):
         self.queue_depth_label_value.setText(str(self.buffer_maxsize))
         old_queue = self.audio_queue
         self.audio_queue = Queue(maxsize=self.buffer_maxsize)
+        old_items = []
         while True:
             try:
-                self.audio_queue.put_nowait(old_queue.get_nowait())
-            except (Empty, Full):
+                old_items.append(old_queue.get_nowait())
+            except Empty:
                 break
+        for item in old_items[-self.buffer_maxsize :]:
+            self.audio_queue.put_nowait(item)
 
     def on_change_stats(self):
         self.stats_label.setText(self.stats_text())
@@ -1241,6 +1278,87 @@ class MainWindow(QMainWindow):
         self.chat_model.clear()
         self.statusBar().showMessage(_(self.language, "Log cleared"), 3000)
 
+    def on_load_models_action(self):
+        threading.Thread(target=self.init_silero, daemon=True).start()
+        if self.toxic_sense >= 1.0:
+            self.add_sys_message(
+                author="Detoxify",
+                text=f"{_(self.language, 'Toxicity threshold')} >= 1.0, {_(self.language, 'skip load')}",
+                status="warning",
+            )
+            return
+        else:
+            threading.Thread(target=self.init_detoxify, daemon=True).start()
+
+    def on_reset_settings_action(self):
+        answer = QMessageBox.question(
+            self,
+            _(self.language, "Reset settings"),
+            _(self.language, "Reset settings to defaults?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self.language = DEFAULT_LANGUAGE
+        self.voice_language = DEFAULT_LANGUAGE
+        self.voice = DEFAULTS["voice"]
+        self.auto_scroll = DEFAULTS["auto_scroll"]
+        self.add_accents = DEFAULTS["add_accents"]
+        self.read_author_names = DEFAULTS["read_author_names"]
+        self.read_platform_names = DEFAULTS["read_platform_names"]
+        self.read_filter = DEFAULTS["read_filter"]
+        self.auto_translate = DEFAULTS["auto_translate"]
+        self.volume = DEFAULTS["volume"]
+        self.speech_rate = DEFAULTS["speech_rate"]
+        self.speech_delay = DEFAULTS["speech_delay"]
+        self.min_msg_length = DEFAULTS["min_msg_length"]
+        self.max_msg_length = DEFAULTS["max_msg_length"]
+        self.toxic_sense = DEFAULTS["toxic_sense"]
+        self.ban_limit = DEFAULTS["ban_limit"]
+        self.buffer_maxsize = DEFAULTS["buffer_maxsize"]
+
+        self.yt_credentials = None
+        self.twitch_credentials = twitch_default_credentials
+        self.stop_words = self.load_stop_words(self.voice_language)
+
+        old_queue = self.audio_queue
+        self.audio_queue = Queue(maxsize=self.buffer_maxsize)
+        while True:
+            try:
+                old_queue.get_nowait()
+            except Empty:
+                break
+
+        self.setup_menu_bar()
+        self.read_filter_combo.setItems([_(self.language, i) for i in DEFAULTS["read_filter"]])
+        self.read_filter_combo.setSelected(self.read_filter)
+        self.read_filter_combo.setTitle(_(self.language, "Read messages"))
+        self.auto_scroll_checkbox.setChecked(self.auto_scroll)
+
+        self.vol_label.setText(_(self.language, "Volume"))
+        self.vol_slider.setValue(self.volume)
+        self.vol_label_value.setText(f"{self.volume}%")
+
+        self.speech_rate_label.setText(_(self.language, "Speech rate"))
+        self.speech_rate_slider.setValue(int(self.speech_rate * 100))
+        self.speech_rate_label_value.setText(f"{self.speech_rate:.2f}x")
+
+        self.voice_label.setText(self.status_voice_text())
+        self.connect_yt_button.setText(_(self.language, "Connected" if self.yt_is_connected else "Connect"))
+        self.connect_twitch_button.setText(_(self.language, "Connected" if self.twitch_is_connected else "Connect"))
+        self.configure_twitch_button.setText(_(self.language, "Configure"))
+        self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
+        self.clear_log_button.setText(_(self.language, "Clear log"))
+        self.pause_button.setText(_(self.language, "Stopped") if self.is_paused else _(self.language, "Playback..."))
+        self.clr_queue_button.setText(_(self.language, "Clear queue"))
+        self.on_change_stats()
+
+        self.save_settings()
+        self.statusBar().showMessage(_(self.language, "Settings reset"), 3000)
+        threading.Thread(target=self.init_silero, daemon=True).start()
+
     def export_log(self, choice):
         if choice == "html":
             log = self.chat_model_to_html()
@@ -1259,7 +1377,7 @@ class MainWindow(QMainWindow):
             if file.open(QIODevice.OpenModeFlag.WriteOnly | QIODevice.OpenModeFlag.Text):
                 file.write(log.encode("utf-8"))
                 file.close()
-                self.statusBar().showMessage(f"{_(self.language, "File saved")}: {file_path}", 3000)
+                self.statusBar().showMessage(f"{_(self.language, 'File saved')}: {file_path}", 3000)
 
     def chat_model_to_text(self):
         lines = []
@@ -1355,12 +1473,21 @@ class MainWindow(QMainWindow):
         while len(self._pending_ui_updates) > 0:
             indicator_text = self._pending_ui_updates.popleft()
             self.audio_indicator.setText(indicator_text)
+        while len(self._pending_status_messages) > 0:
+            status_text, timeout_ms = self._pending_status_messages.popleft()
+            self.statusBar().showMessage(status_text, timeout_ms)
 
     def _set_audio_indicator(self, indicator_text):
         if threading.current_thread() is threading.main_thread():
             self.audio_indicator.setText(indicator_text)
             return
         self._pending_ui_updates.append(indicator_text)
+
+    def _show_status_message(self, text, timeout_ms=3000):
+        if threading.current_thread() is threading.main_thread():
+            self.statusBar().showMessage(text, timeout_ms)
+            return
+        self._pending_status_messages.append((text, timeout_ms))
 
     def _insert_message(self, platform, author, text, color=None, background=None):
         time_str = datetime.now().strftime("%H:%M:%S")
@@ -1468,7 +1595,7 @@ class MainWindow(QMainWindow):
 
     def save_banned_list(self):
         with open(
-            resource_path(f"spam_filter/banned.txt"),
+            resource_path("spam_filter/banned.txt"),
             "w",
             encoding="utf-8",
         ) as f:
@@ -1502,121 +1629,145 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def init_detoxify(self):
-        cached_checkpoint = None
-        try:
-            configure_torch_hub_cache()
-            ensure_stdio_streams()
-            self.add_sys_message(author="Detoxify", text=_(self.language, "detoxify_loading"))
-            detoxify_cls = _get_detoxify_class()
-            cached_checkpoint = find_cached_detoxify_checkpoint("multilingual")
-            if cached_checkpoint:
-                self.detox_model = detoxify_cls(
-                    model_type="multilingual",
-                    checkpoint=cached_checkpoint,
+        attempt = 0
+        error_text = None
+
+        self.add_sys_message(author="Detoxify", text=_(self.language, "detoxify_loading"))
+        configure_torch_hub_cache()
+        cached_checkpoint, huggingface_config_path = find_cached_detoxify_checkpoint("multilingual")
+
+        while attempt < 5 and not self.detox_model:
+            try:
+                if cached_checkpoint and attempt == 0:
+                    if not getattr(detoxify_impl, "_fj_local_patch_applied", False):
+                        detoxify_impl.get_model_and_tokenizer = detoxify_get_model_and_tokenizer_local_only
+                        detoxify_impl._fj_local_patch_applied = True
+
+                    self.detox_model = Detoxify(
+                        model_type="multilingual",
+                        checkpoint=cached_checkpoint[0],
+                        huggingface_config_path=huggingface_config_path,
+                    )
+                else:
+                    os.environ["TRANSFORMERS_OFFLINE"] = "0"
+                    os.environ["HF_HUB_OFFLINE"] = "0"
+                    if not getattr(detoxify_impl, "_fj_patch_applied", False):
+                        detoxify_impl.get_model_and_tokenizer = lambda model_type, model_name, tokenizer_name, num_classes, state_dict, huggingface_config_path=None: detoxify_get_model_and_tokenizer_local_only(
+                            model_type,
+                            model_name,
+                            tokenizer_name,
+                            num_classes,
+                            state_dict,
+                            huggingface_config_path=None,
+                            local_files_only=False,
+                        )
+                        detoxify_impl._fj_patch_applied = True
+                    self.detox_model = Detoxify("multilingual")
+
+            except Exception as e:
+                attempt += 1
+                error_str = str(e)
+                error_text = _(self.language, error_str)
+
+                if "PytorchStreamReader" in error_str or "Ran out of input" in error_str:
+                    clear_cache_detoxify()
+
+                self.add_sys_message(
+                    author="Detoxify",
+                    text=f"{_(self.language, 'detoxify_loading_failed')}. {error_text}. {attempt}/5",
+                    status="error",
+                )
+
+        else:
+            if self.detox_model and getattr(self.detox_model, "predict"):
+                self.add_sys_message(
+                    author="Detoxify",
+                    text=_(self.language, "detoxify_loaded"),
+                    status="success",
                 )
             else:
-                self.detox_model = detoxify_cls("multilingual")
-            self.add_sys_message(
-                author="Detoxify",
-                text=_(self.language, "detoxify_loaded"),
-                status="success",
-            )
-
-        except Exception as e:
-            error_text = str(e)
-            if "PytorchStreamReader failed reading zip archive: failed finding central directory" in error_text:
-                if cached_checkpoint and os.path.isfile(cached_checkpoint):
-                    try:
-                        self.add_sys_message(
-                            author="Detoxify",
-                            text=f"{_(self.language, "detoxify_loading_failed")}. {_(self.language, "The file is corrupted")}",
-                            status="error",
-                        )
-                        os.remove(cached_checkpoint)
-                        return
-                    except OSError:
-                        pass
-                clear_detoxify_checkpoint_cache("multilingual")
-            self.add_sys_message(
-                author="Detoxify",
-                text=f"{_(self.language, "detoxify_loading_failed")}. {translate_text(str(e), self.language)}",
-                status="error",
-            )
+                self.add_sys_message(
+                    author="Detoxify",
+                    text=f"{_(self.language, 'detoxify_loading_failed')}. {error_text if error_text else ""}",
+                    status="error",
+                )
 
     def init_silero(self):
-        self.add_sys_message(author="Silero", text=_(self.language, "silero_loading"))
-        try:
-            configure_torch_hub_cache()
-            torch = _get_torch()
-            hub = torch.hub
-            torch.set_num_threads(2)
-            with self.model_lock:
-                if getattr(sys, "frozen", False):
-                    cached_repo = find_cached_silero_repo()
-                    if cached_repo:
-                        prefer_cached_silero_package(cached_repo)
-                        self.model, txt = hub.load(
-                            repo_or_dir=cached_repo,
-                            source="local",
-                            model="silero_tts",
-                            language=self.voice_language,
-                            speaker=MODELS[self.voice_language],
-                            trust_repo=True,
-                            force_reload=False,
-                            verbose=False,
-                        )
-                    else:
-                        self.model, txt = hub.load(
-                            repo_or_dir="snakers4/silero-models",
-                            source="github",
-                            model="silero_tts",
-                            language=self.voice_language,
-                            speaker=MODELS[self.voice_language],
-                            trust_repo=True,
-                            force_reload=False,
-                            verbose=False,
-                        )
-                else:
-                    self.model, txt = hub.load(
-                        repo_or_dir="snakers4/silero-models",
-                        model="silero_tts",
-                        language=self.voice_language,
-                        speaker=MODELS[self.voice_language],
-                        trust_repo=True,
-                        force_reload=False,
-                        verbose=False,
-                    )
+        attempt = 0
+        error_text = None
 
-            self.add_sys_message(
-                author="Silero",
-                text=_(self.language, "silero_loaded"),
-                status="success",
-            )
+        while attempt < 5 and not self.model:
+            if attempt > 0:
+                self.add_sys_message(
+                    author="Silero",
+                    text=_(self.language, "silero_loading") + f" {attempt}/5",
+                )
+            else:
+                self.add_sys_message(author="Silero", text=_(self.language, "silero_loading"))
 
-        except Exception as e:
-            self.add_sys_message(
-                author="Silero",
-                text=f"{_(self.language, "silero_failed")}. {translate_text(str(e), self.language)}",
-                status="error",
-            )
-            return False
-        finally:
             try:
-                silero_catalog_path = os.path.join(os.getcwd(), "latest_silero_models.yml")
-                os.remove(silero_catalog_path)
-            except OSError:
-                pass
+                with self.model_lock:
+                    if self.model and getattr(self.model, "apply_tts"):
+                        pass
+                    else:
+                        configure_torch_hub_cache()
+
+                        if getattr(sys, "frozen", False):
+                            cached_repo = find_cached_silero_repo()
+                            if cached_repo:
+                                self.model, txt = torch.hub.load(
+                                    repo_or_dir=cached_repo,
+                                    source="local",
+                                    model="silero_tts",
+                                    language=self.voice_language,
+                                    speaker=MODELS[self.voice_language],
+                                    trust_repo=True,
+                                    force_reload=False,
+                                    verbose=False,
+                                )
+                            else:
+                                self.model, txt = torch.hub.load(
+                                    repo_or_dir="snakers4/silero-models",
+                                    source="github",
+                                    model="silero_tts",
+                                    language=self.voice_language,
+                                    speaker=MODELS[self.voice_language],
+                                    trust_repo=True,
+                                    force_reload=attempt > 0,
+                                    verbose=False,
+                                )
+                        else:
+                            self.model, txt = torch.hub.load(
+                                repo_or_dir="snakers4/silero-models",
+                                source="github",
+                                model="silero_tts",
+                                language=self.voice_language,
+                                speaker=MODELS[self.voice_language],
+                                trust_repo=True,
+                                force_reload=attempt > 0,
+                                verbose=False,
+                            )
+
+            except Exception as e:
+                attempt += 1
+                error_text = str(e)
+
+        else:
+            if self.model and getattr(self.model, "apply_tts"):
+                self.add_sys_message(
+                    author="Silero",
+                    text=_(self.language, "silero_loaded"),
+                    status="success",
+                )
+            else:
+                self.add_sys_message(
+                    author="Silero",
+                    text=f"{_(self.language, 'silero_failed')}. {translate_text(error_text, self.language) if error_text else ""}",
+                    status="error",
+                )
 
     def get_msg_hash(self, platform, author, message):
         return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()
-
-    def contains_stop_words(self, text: str):
-        """Check for stop words"""
-        text_words = text.split(" ")
-        for word in text_words:
-            if word.lower() in self.stop_words:
-                return True
-        return False
 
     def process_toxic_message(
         self,
@@ -1643,7 +1794,7 @@ class MainWindow(QMainWindow):
             if self.toxic_dict[platform_author] > self.ban_limit:
                 self.add_sys_message(
                     author=platform,
-                    text=f"[{_(self.language, "Banned")}] {author}",
+                    text=f"[{_(self.language, 'Banned')}] {author}",
                     status="warning",
                 )
                 self.banned_set.add(platform_author)
@@ -1660,6 +1811,8 @@ class MainWindow(QMainWindow):
         is_owner=False,
         is_donate=False,
     ):
+        logger.debug("process_chat_message(): msg_id=%s platform=%s author=%s", msg_id, platform, author)
+
         cleaned_author = clean_message(author, self.language)
         cleaned_author = cleaned_author.removeprefix("@")
         platform_author = f"{platform}:{cleaned_author}"
@@ -1671,7 +1824,7 @@ class MainWindow(QMainWindow):
             self.add_message(
                 platform=platform,
                 author=cleaned_author,
-                text=f"[{_(self.language, "Banned")}] {cleaned_text}",
+                text=f"[{_(self.language, 'Banned')}] {cleaned_text}",
                 color="gray",
             )
             return
@@ -1680,7 +1833,7 @@ class MainWindow(QMainWindow):
             return
         self.processed_messages.add(msg_id)
 
-        if self.contains_stop_words(cleaned_text):
+        if contains_stop_words(cleaned_text, stop_words=self.stop_words):
             self.process_toxic_message(
                 platform=platform,
                 author=cleaned_author,
@@ -1692,7 +1845,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.detox_model:
+        if self.detox_model and getattr(self.detox_model, "predict"):
             sentiment = self.detox_model.predict(cleaned_text.lower())
             detox_key = max(sentiment, key=sentiment.get)
             detox_value = sentiment[detox_key]
@@ -1720,6 +1873,9 @@ class MainWindow(QMainWindow):
             text=cleaned_text,
             background="darkGreen" if is_donate else None,
         )
+
+        if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
+            return
 
         read_filter = self.read_filter_combo.getSelected()
         if is_staff and _(self.language, "Moderator") not in read_filter:
@@ -1751,7 +1907,7 @@ class MainWindow(QMainWindow):
             cleaned_text = f"{transliteration(cleaned_author, self.voice_language)} {_(self.voice_language, 'said')} - {cleaned_text}"
 
         if self.read_platform_names:
-            cleaned_text = f"{_(self.voice_language, "Message from")} {_(self.voice_language, str(platform).lower())}: {cleaned_text}"
+            cleaned_text = f"{_(self.voice_language, 'Message from')} {_(self.voice_language, str(platform).lower())}: {cleaned_text}"
 
         self.speak(cleaned_text)
 
@@ -1759,34 +1915,47 @@ class MainWindow(QMainWindow):
 
     def text_to_speech(self, text):
         """Convert text to speech using Silero"""
+        logger.debug("text_to_speech(): %s", text)
         try:
-            if self.model is not None:
+            if self.model is not None and getattr(self.model, "apply_tts"):
                 with self.model_lock:
-                    torch = _get_torch()
                     with torch.no_grad():
-                        if self.voice == "random":
-                            num = randint(0, len(VOICES[self.voice_language]) - 1)
-                            voice = VOICES[self.voice_language][num]
-                        else:
-                            voice = self.voice
+                        available_voices = VOICES.get(self.voice_language) or []
+                        if not available_voices:
+                            raise RuntimeError(f"No voices configured for language '{self.voice_language}'")
+
+                        selected_voice = self.voice
+                        if selected_voice != "random" and selected_voice not in available_voices:
+                            selected_voice = "random"
+
+                        if selected_voice == "random":
+                            num = randint(0, len(available_voices) - 1)
+                            selected_voice = available_voices[num]
 
                         return self.model.apply_tts(
                             text=text,
-                            speaker=voice,
+                            speaker=selected_voice,
                             # sample_rate=self.sample_rate,
                             put_accent=self.add_accents,
-                            # put_yo=self.put_yo,
+                            put_yo=True,
                         )
+            else:
+                self.add_sys_message(
+                    author="Silero",
+                    text=_(self.language, "silero_not_loaded"),
+                    status="error",
+                )
         except Exception as e:
-            pass
-            # self.add_sys_message(
-            #     author="text_to_speech()",
-            #     text=f"{_(self.language, "Error convert text to speech")}, {translate_text(str(e), self.language)}. TEXT: {text}",
-            #     status="error",
-            # )
+            self.add_sys_message(
+                author="text_to_speech()",
+                text=f"{_(self.language, 'Error convert text to speech')}. {translate_text(str(e))}",
+                status="error",
+            )
+            return None
 
     def postprocess_audio(self, audio):
         """Postprocess audio: convert to numpy, normalize, apply volume and speed"""
+        logger.debug("postprocess_audio()")
         try:
             if hasattr(audio, "cpu"):
                 audio = audio.cpu().numpy()
@@ -1814,26 +1983,39 @@ class MainWindow(QMainWindow):
 
     def speak(self, text):
         """Main TTS method"""
+        logger.debug("speak(): %s", text)
         try:
             audio = self.text_to_speech(text)
             if audio is None:
                 return False
             audio_numpy = self.postprocess_audio(audio)
             if len(audio_numpy) > 0:
-                self.audio_queue.put(audio_numpy, timeout=2.0)
+                self._put_audio_latest(audio_numpy)
                 return True
             return False
-        except Full:
-            return False
+
         except Exception as e:
             self.add_sys_message(
                 author="speak()",
-                text=f"{_(self.language, "Audio playback error")}. {translate_text(str(e), self.language)}",
+                text=f"{_(self.language, 'Audio playback error')}. {translate_text(str(e), self.language)}",
                 status="error",
             )
             return False
 
+    def _put_audio_latest(self, audio_numpy):
+        logger.debug("_put_audio_latest()")
+        while True:
+            try:
+                self.audio_queue.put_nowait(audio_numpy)
+                return
+            except Full:
+                try:
+                    self.audio_queue.get_nowait()
+                except Empty:
+                    continue
+
     def play_audio(self, audio_to_play):
+        logger.debug("play_audio()")
         try:
             self._set_audio_indicator("🔴")
             sd.play(audio_to_play, blocking=False)
@@ -1855,6 +2037,7 @@ class MainWindow(QMainWindow):
             self._set_audio_indicator("🟢")
 
     def process_audio_loop(self):
+        logger.debug("process_audio_loop()")
         """Main loop to process audio queue"""
         while True:
             played_message = False
@@ -1880,11 +2063,41 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 self.add_sys_message(
                     author="process_audio_loop()",
-                    text=f"{_(self.language, "Audio queue error")}. {translate_text(str(e), self.language)}",
+                    text=f"{_(self.language, 'Audio queue error')}. {translate_text(str(e), self.language)}",
                     status="error",
                 )
             if played_message:
                 sleep(self.speech_delay)
+
+    def process_messages_loop(self):
+        logger.debug("process_messages_loop()")
+
+        while True:
+            try:
+                try:
+                    msg_data: ChatMessage = self.process_message_queue.get(timeout=0.2)
+                except Empty:
+                    continue
+
+                self.process_chat_message(
+                    msg_id=msg_data["msg_id"],
+                    platform=msg_data["platform"],
+                    author=msg_data["author"],
+                    message=msg_data["message"],
+                    is_sponsor=msg_data["is_sponsor"],
+                    is_staff=msg_data["is_staff"],
+                    is_owner=msg_data["is_owner"],
+                    is_donate=msg_data["is_donate"],
+                )
+
+            except Exception as e:
+                self.add_sys_message(
+                    author="process_messages_loop()",
+                    text=f"{_(self.language, 'Process message queue error')}. {translate_text(str(e), self.language)}",
+                    status="error",
+                )
+
+            sleep(0.1)
 
 
 def main():

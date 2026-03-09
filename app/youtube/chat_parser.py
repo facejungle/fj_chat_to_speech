@@ -2,14 +2,15 @@ from threading import Thread, current_thread, main_thread
 from time import sleep
 import pytchat
 from pytchat.core import PytchatCore
-import urllib
+import re
+from urllib.request import Request, urlopen
 
 from app.translations import _, translate_text
 from app.utils import parse_youtube_video_id
 
 
 class YouTubeChatParser:
-    MAX_RETRIES = 5
+    MAX_RETRIES = 10
     POLL_TYPES = {
         "poll",
         "liveChatPoll",
@@ -24,6 +25,7 @@ class YouTubeChatParser:
         on_message,
         on_connect,
         on_disconnect,
+        on_reconnect,
         on_error,
         lang: str = "en",
     ):
@@ -32,16 +34,53 @@ class YouTubeChatParser:
         self.on_message = on_message
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
+        self.on_reconnect = on_reconnect
         self.on_error = on_error
+        self.disconnect_signal = False
         self.lang = lang
 
-        self.is_connected = False
+        self.chat: PytchatCore | None = None
         self.video_id = parse_youtube_video_id(url)
 
-    def _stop_chat(self, chat):
-        if not chat:
+    def _fetch_watch_page(self) -> str:
+        if not self.video_id:
+            return ""
+
+        watch_url = f"https://www.youtube.com/watch?v={self.video_id}"
+        request = Request(
+            watch_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urlopen(request, timeout=15) as response:
+            return response.read().decode("utf-8", errors="ignore")
+
+    def _has_live_chat(self) -> bool:
+        html = self._fetch_watch_page()
+        if not html:
+            return False
+
+        # Reject regular uploads and finished streams.
+        if not re.search(r'"isLiveNow"\s*:\s*true', html):
+            return False
+
+        # Ensure chat is available for this live.
+        return bool(
+            re.search(r'"liveChatRenderer"\s*:', html)
+            or re.search(r'"liveChatFrameEndpoint"\s*:', html)
+            or re.search(r'"conversationBar"\s*:', html)
+        )
+
+    def _stop_chat(self):
+        if not self.chat:
             return
-        terminate = getattr(chat, "terminate", None)
+        terminate = getattr(self.chat, "terminate", None)
         if callable(terminate):
             try:
                 terminate()
@@ -52,9 +91,46 @@ class YouTubeChatParser:
         use_interruptable = current_thread() is main_thread()
 
         if not self.video_id:
-            raise AttributeError(_(self.lang, "not_determine_video_id"))
+            raise AttributeError("not_determine_video_id")
 
-        return pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
+        self._stop_chat()
+        self.chat = pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
+        return self.chat
+
+    def _emit_messages(self, data):
+        for message in data.sync_items():
+            author_details = getattr(message, "author", None)
+            if author_details is None:
+                continue
+
+            payload = self._build_message_payload(message)
+            if not payload["msg"]:
+                continue
+
+            self.on_message(
+                msg_id=message.id,
+                author=getattr(author_details, "name", ""),
+                msg=payload["msg"],
+                is_sponsor=getattr(author_details, "isChatSponsor", False),
+                is_staff=getattr(author_details, "isChatModerator", False),
+                is_owner=getattr(author_details, "isChatOwner", False),
+                is_donate=payload["is_donate"],
+            )
+
+    def _ensure_stream_is_live(self):
+        if not self.chat:
+            return False
+
+        data = self.chat.get()
+        if self.chat.is_replay():
+            self.on_error(_(self.lang, "video_not_found"))
+            return False
+
+        raise_for_status = getattr(self.chat, "raise_for_status", None)
+        if callable(raise_for_status):
+            raise_for_status()
+
+        return data
 
     def _build_message_payload(self, message):
         message_type = str(getattr(message, "type", "") or "").strip()
@@ -99,70 +175,78 @@ class YouTubeChatParser:
 
         return {"msg": text, "is_donate": is_donate}
 
-    def _stream_chat(self, chat: PytchatCore) -> str:
-        errors = 0
-
-        while errors < self.MAX_RETRIES:
-            try:
-                while chat.is_alive() and self.is_connected:
-                    data = chat.get()
-                    for message in data.sync_items():
-                        author_details = getattr(message, "author", None)
-                        if author_details is None:
-                            continue
-
-                        payload = self._build_message_payload(message)
-                        if not payload["msg"]:
-                            continue
-
-                        self.on_message(
-                            msg_id=message.id,
-                            author=getattr(author_details, "name", ""),
-                            msg=payload["msg"],
-                            is_sponsor=getattr(author_details, "isChatSponsor", False),
-                            is_staff=getattr(author_details, "isChatModerator", False),
-                            is_owner=getattr(author_details, "isChatOwner", False),
-                            is_donate=payload["is_donate"],
-                        )
-
-                    raise_for_status = getattr(chat, "raise_for_status", None)
-                    if callable(raise_for_status):
-                        raise_for_status()
-
-                    errors = 0
-                else:
-                    raise ConnectionError(_(self.lang, "connection_failed"))
-
-            except Exception as e:
-                if not self.is_connected:
-                    return
-                errors += 1
-                self.on_error(
-                    f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}. {_(self.lang, 'Reconnect')} {errors}/{self.MAX_RETRIES}"
-                )
-
-                sleep(errors)
-
-    def _connect(self):
-        self.is_connected = True
-        chat = None
-
+    def _stream_chat(self, initial_data=None) -> str:
         try:
-            chat = self._create_chat()
-            self.on_connect()
-            self._stream_chat(chat)
+            if initial_data is not None:
+                self._emit_messages(initial_data)
+
+            while self.chat and self.chat.is_alive() and not self.disconnect_signal:
+                data = self.chat.get()
+                self._emit_messages(data)
+
+                raise_for_status = getattr(self.chat, "raise_for_status", None)
+                if callable(raise_for_status):
+                    raise_for_status()
+
+                sleep(1)
 
         except Exception as e:
-            self.on_error(f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}")
+            if self.disconnect_signal:
+                return
 
-        finally:
-            self._stop_chat(chat)
-            self.disconnect()
+            raise ConnectionError(f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}")
+
+    def _connect(self):
+        errors = 0
+
+        while errors < self.MAX_RETRIES and not self.disconnect_signal:
+            try:
+                if not self._has_live_chat():
+                    self.on_error(f"{_(self.lang, 'connection_failed')}. {_(self.lang, 'video_not_found')}")
+                    break
+
+                self._create_chat()
+                initial_data = self._ensure_stream_is_live()
+
+                if initial_data is False:
+                    break
+
+                if self.chat and self.chat.is_alive():
+                    errors = 0
+                    self.on_connect()
+                    self._stream_chat(initial_data=initial_data)
+
+            except Exception as e:
+                if self.disconnect_signal:
+                    break
+
+                error_str = str(e)
+                errors += 1
+
+                if "not_determine_video_id" in error_str:
+                    self.on_error(f"{_(self.lang, 'connection_failed')}. {_(self.lang, error_str)}")
+                    break
+
+                if (
+                    "URL can't contain" in error_str
+                    or "Invalid video id" in error_str
+                    or "Chat data stream is empty" in error_str
+                ):
+                    self.on_error(f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}")
+                    break
+
+                self.on_reconnect()
+                self.on_error(
+                    f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}. {_(self.lang, 'Reconnect')} {errors}/{self.MAX_RETRIES}"
+                )
+                sleep(errors * 2)
+
+        self.disconnect()
 
     def disconnect(self):
-        if self.is_connected:
-            self.on_disconnect()
-        self.is_connected = False
+        self.disconnect_signal = True
+        self._stop_chat()
+        self.on_disconnect()
 
     def run(self):
         th = Thread(target=self._connect, daemon=True)

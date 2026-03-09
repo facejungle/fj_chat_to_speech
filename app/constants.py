@@ -1,5 +1,5 @@
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 
 PADDING = 20
 VOICES = {

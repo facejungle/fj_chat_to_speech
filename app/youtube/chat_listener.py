@@ -57,7 +57,9 @@ class YouTubeChatListener:
                 sleep(delay * max(1, errors))
 
         except Exception as e:
-            self.on_error(f"{_(self.lang, "chat_listener_error")}. {translate_text(str(e), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "chat_listener_error")}. {translate_text(str(e), self.lang)}"
+            )
 
         finally:
             self.disconnect()
@@ -120,11 +122,15 @@ class YouTubeChatListener:
 
         except HttpError as e:
             is_error = True
-            self.on_error(f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e.reason), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e.reason), self.lang)}"
+            )
 
         except Exception as e:
             is_error = True
-            self.on_error(f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "error_fetch_messages")}. {translate_text(str(e), self.lang)}"
+            )
 
         return next_token, is_error
 
@@ -143,16 +149,24 @@ class YouTubeChatListener:
             return True
 
         except HttpError as e:
-            self.on_error(f"{_(self.lang, "connection_failed")}. {translate_text(str(e.reason), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "connection_failed")}. {translate_text(str(e.reason), self.lang)}"
+            )
             return False
 
         except Exception as e:
-            self.on_error(f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
+            )
             return False
 
     def _get_chat_id(self):
         try:
-            response = self.client.videos().list(part="liveStreamingDetails", id=self.video_id).execute()
+            response = (
+                self.client.videos()
+                .list(part="liveStreamingDetails", id=self.video_id)
+                .execute()
+            )
 
             if response.get("items"):
                 details = response["items"][0].get("liveStreamingDetails", {})
@@ -161,7 +175,11 @@ class YouTubeChatListener:
                 self.on_error(_(self.lang, "video_not_found"))
 
         except HttpError as e:
-            self.on_error(f"{_(self.lang, "not_determine_chat_id")}. {translate_text(str(e.reason), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "not_determine_chat_id")}. {translate_text(str(e.reason), self.lang)}"
+            )
 
         except Exception as e:
-            self.on_error(f"{_(self.lang, "not_determine_chat_id")}. {translate_text(str(e), self.lang)}")
+            self.on_error(
+                f"{_(self.lang, "not_determine_chat_id")}. {translate_text(str(e), self.lang)}"
+            )

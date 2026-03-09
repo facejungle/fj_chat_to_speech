@@ -5,33 +5,16 @@ import os
 import platform
 import re
 import sys
-import importlib
+from typing import Iterable
 
 import num2words
 import urllib
 
+import transformers
+from torch import hub
 
 from app.constants import APP_NAME
 from app.translations import _
-
-_torch_hub = None
-_torch_hub_error = None
-
-
-def _get_torch_hub():
-    global _torch_hub, _torch_hub_error
-    if _torch_hub is not None:
-        return _torch_hub
-    if _torch_hub_error is not None:
-        raise _torch_hub_error
-
-    try:
-        torch_module = importlib.import_module("torch")
-        _torch_hub = torch_module.hub
-        return _torch_hub
-    except Exception as e:
-        _torch_hub_error = e
-        raise
 
 
 class _NullStream:
@@ -76,7 +59,7 @@ def get_user_data_dir() -> str:
         appdata = os.getenv("APPDATA")
         if appdata:
             return os.path.join(appdata, APP_NAME)
-    return os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower().replace(" ", "_")}")
+    return os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower().replace(' ', '_')}")
 
 
 def get_settings_path() -> str:
@@ -100,12 +83,10 @@ def configure_torch_hub_cache():
     os.environ.setdefault("XDG_CACHE_HOME", cache_root)
     os.environ.setdefault("TORCH_HOME", torch_home)
     os.makedirs(torch_hub_dir, exist_ok=True)
-    hub = _get_torch_hub()
     hub.set_dir(torch_hub_dir)
 
 
 def find_cached_silero_repo():
-    hub = _get_torch_hub()
     hub_dir = hub.get_dir()
     if not os.path.isdir(hub_dir):
         return None
@@ -123,27 +104,40 @@ def find_cached_silero_repo():
     return max(repo_candidates, key=os.path.getmtime)
 
 
-def prefer_cached_silero_package(repo_path):
-    """Force hubconf import to resolve silero package from cached torch hub repo."""
-    if not repo_path:
-        return
-
-    src_dir = os.path.join(repo_path, "src")
-    if os.path.isdir(src_dir) and src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-
-    # Drop bundled silero modules from PyInstaller temp path to avoid redownload on each launch.
-    for module_name in list(sys.modules.keys()):
-        if module_name == "silero" or module_name.startswith("silero."):
-            del sys.modules[module_name]
+def detoxify_get_model_and_tokenizer_local_only(
+    model_type,
+    model_name,
+    tokenizer_name,
+    num_classes,
+    state_dict,
+    huggingface_config_path=None,
+    local_files_only=True,
+):
+    model_class = getattr(transformers, model_name)
+    source = huggingface_config_path or model_type
+    config = model_class.config_class.from_pretrained(
+        source,
+        num_labels=num_classes,
+        local_files_only=local_files_only,
+    )
+    model = model_class.from_pretrained(
+        pretrained_model_name_or_path=None,
+        config=config,
+        state_dict=state_dict,
+        local_files_only=local_files_only,
+    )
+    tokenizer = getattr(transformers, tokenizer_name).from_pretrained(
+        source,
+        local_files_only=local_files_only,
+    )
+    return model, tokenizer
 
 
 def find_cached_detoxify_checkpoint(model_type="multilingual"):
-    hub = _get_torch_hub()
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
-        return None
+        return None, None
 
     expected_prefixes = {
         "original": "toxic_original-",
@@ -154,7 +148,7 @@ def find_cached_detoxify_checkpoint(model_type="multilingual"):
     }
     expected_prefix = expected_prefixes.get(model_type)
     if not expected_prefix:
-        return None
+        return None, None
 
     checkpoint_candidates = []
     for entry in os.listdir(checkpoints_dir):
@@ -169,44 +163,45 @@ def find_cached_detoxify_checkpoint(model_type="multilingual"):
         checkpoint_candidates.append(checkpoint_path)
 
     if not checkpoint_candidates:
-        return None
+        return None, None
 
-    return checkpoint_candidates[0]
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+    hf_config_path = None
+    hf_cache_root = os.getenv("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    hf_snapshots_dir = os.path.join(hf_cache_root, "hub", "models--xlm-roberta-base", "snapshots")
+    if os.path.isdir(hf_snapshots_dir):
+        snapshots = [
+            os.path.join(hf_snapshots_dir, entry)
+            for entry in os.listdir(hf_snapshots_dir)
+            if os.path.isdir(os.path.join(hf_snapshots_dir, entry))
+        ]
+        if snapshots:
+            hf_config_path = max(snapshots, key=os.path.getmtime)
+            os.environ["HF_HUB_OFFLINE"] = "1"
+
+    return checkpoint_candidates, hf_config_path
 
 
-def clear_detoxify_checkpoint_cache(model_type="multilingual"):
-    hub = _get_torch_hub()
+def clear_cache_detoxify():
+    hf_cache_root = os.getenv("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    hf_snapshots_dir = os.path.join(hf_cache_root, "hub", "models--xlm-roberta-base")
+
+    if os.path.isdir(hf_snapshots_dir):
+        os.system('rmdir /S /Q "{}"'.format(hf_snapshots_dir))
+
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
         return
 
-    model_markers = {
-        "original": "toxic_original",
-        "unbiased": "toxic_debiased",
-        "multilingual": "multilingual_debiased",
-        "original-small": "original-albert",
-        "unbiased-small": "unbiased-albert",
-    }
-    marker = model_markers.get(model_type, model_type)
-
     for entry in os.listdir(checkpoints_dir):
-        entry_lower = entry.lower()
-        if marker not in entry:
+        if not entry.startswith("multilingual_debiased-"):
             continue
-        # Remove completed and partial download artifacts to force a clean redownload.
-        if not (
-            entry.endswith(".ckpt")
-            or entry_lower.endswith(".tmp")
-            or entry_lower.endswith(".part")
-            or ".partial" in entry_lower
-        ):
+        checkpoint_path = os.path.join(checkpoints_dir, entry)
+        if not os.path.isfile(checkpoint_path):
             continue
-
-        try:
-            os.remove(os.path.join(checkpoints_dir, entry))
-        except OSError:
-            pass
+        os.remove(checkpoint_path)
 
 
 def clean_symbol_spam(text: str) -> str:
@@ -215,6 +210,9 @@ def clean_symbol_spam(text: str) -> str:
     if len(token) < 6:
         return text
     # spam_replacement = "".join(dict.fromkeys(token)) + "..."
+
+    if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", token):
+        return token
 
     lowered = token.lower()
     alpha = re.sub(r"[^a-zа-яё]", "", lowered)
@@ -267,8 +265,8 @@ def clean_message(text: str, ui_lang: str) -> str:
 
     text = str(text or "")
 
-    text = re.sub(r"https?://\S+", f":{_(ui_lang, "Link")}:", text)
-    text = re.sub(r"www\.\S+", f":{_(ui_lang, "Link")}:", text)
+    text = re.sub(r"https?://\S+", f":{_(ui_lang, 'Link')}:", text)
+    text = re.sub(r"www\.\S+", f":{_(ui_lang, 'Link')}:", text)
 
     emoji_pattern = re.compile(
         "["
@@ -298,6 +296,45 @@ def clean_message(text: str, ui_lang: str) -> str:
         if cleaned_text:
             text_arr.append(cleaned_text)
     return " ".join(text_arr)
+
+
+def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
+    """
+    Check if text contains any stop words.
+
+    Args:
+        text: Input text to check
+        stop_words: Iterable stop words list
+
+    Returns:
+        True if text contains any stop words, False otherwise
+    """
+    if not text or not stop_words:
+        return False
+
+    text_lower = text.lower()
+    text_words = text_lower.split()
+
+    if any(word in stop_words for word in text_words):
+        return True
+
+    # if any(stop_word.lower() in text_lower for stop_word in stop_words):
+    #     return True
+
+    return False
+
+
+def contain_words_or_nums(text: str, lang: str = "en") -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+
+    if lang == "en":
+        return bool(re.search(r"[A-Za-z0-9]", value))
+    if lang == "ru":
+        return bool(re.search(r"[А-Яа-яЁё0-9]", value))
+
+    return bool(re.search(r"[^\W_]", value, flags=re.UNICODE))
 
 
 @lru_cache
@@ -334,14 +371,14 @@ def convert_numbers_to_words(text: str, lang: str) -> str:
         try:
             if "." in num:
                 parts = num.split(".")
-                integer_part = num2words(int(parts[0]), lang=lang)
-                fractional_part = num2words(int(parts[1]), lang=lang)
-                return f"{integer_part} {_(lang, "point")} {fractional_part}"
+                integer_part = num2words.num2words(int(parts[0]), lang=lang)
+                fractional_part = num2words.num2words(int(parts[1]), lang=lang)
+                return f"{integer_part} {_(lang, 'point')} {fractional_part}"
             elif "," in num:
                 parts = num.split(",")
-                return num2words(int("".join(parts)), lang=lang)
+                return num2words.num2words(int("".join(parts)), lang=lang)
             else:
-                return num2words(int(num), lang=lang)
+                return num2words.num2words(int(num), lang=lang)
         except Exception:
             return num
 

@@ -61,7 +61,6 @@ class TwitchChatListener:
         self.listen_thread = None
         self.last_ping = time()
         self._is_stopping = False
-        self._connected_once = False
 
     def _handle_expired_access(self):
         try:
@@ -78,7 +77,7 @@ class TwitchChatListener:
             self.sock.send(f"{command}\r\n".encode("utf-8"))
         except Exception as e:
             self.on_error(
-                f"{_(self.lang, "Error send a command")} {command}. {translate_text(str(e), self.lang)}"
+                f"{_(self.lang, 'Error send a command')} {command}. {translate_text(str(e), self.lang)}"
             )
 
     def _recv(self):
@@ -86,7 +85,7 @@ class TwitchChatListener:
             return self.sock.recv(4096).decode("utf-8", errors="ignore")
         except Exception as e:
             self.on_error(
-                f"{_(self.lang, "Error recv data")}. {translate_text(str(e), self.lang)}"
+                f"{_(self.lang, 'Error recv data')}. {translate_text(str(e), self.lang)}"
             )
 
     def _parse_channel(self, channel_input):
@@ -161,13 +160,7 @@ class TwitchChatListener:
                     sleep(reconnect_attempts)
                     continue
 
-                start_time = time()
-
-                while (
-                    not self.is_connected
-                    and (time() - start_time) < 10
-                    and not self._is_stopping
-                ):
+                while not self.is_connected and not self._is_stopping:
                     try:
                         response = self.sock.recv(4096).decode("utf-8", errors="ignore")
                         lines = response.strip().split("\r\n")
@@ -176,13 +169,13 @@ class TwitchChatListener:
                                 if self._handle_expired_access():
                                     self._close_socket()
                                     if self._create_socket():
-                                        start_time = time()
                                         break
                                     reconnect_attempts += 1
                                     break
                                 self.on_error(
                                     _(self.lang, "Failed to refresh access token")
                                 )
+                                self.on_disconnect()
                                 return
 
                             if f"JOIN #{self.channel}" in line:
@@ -213,8 +206,7 @@ class TwitchChatListener:
                     sleep(reconnect_attempts)
                     continue
 
-                if not self._connected_once:
-                    self._connected_once = True
+                else:
                     self.on_connect()
 
                 reconnect_attempts = 0
@@ -237,48 +229,19 @@ class TwitchChatListener:
             if self._is_stopping:
                 return
             self.on_error(
-                f"{_(self.lang, "connection_failed")}. {translate_text(str(e), self.lang)}"
+                f"{_(self.lang, 'connection_failed')}. {translate_text(str(e), self.lang)}"
             )
             return
         finally:
             self.disconnect()
 
     def disconnect(self):
-        was_connected = self.is_connected or self._connected_once
+        was_connected = self.is_connected
         if was_connected:
             self.on_disconnect()
         self._is_stopping = True
         self.is_connected = False
-        self._connected_once = False
         self._close_socket()
-
-    def _fetch(self, endpoint, params=None):
-        url = f"https://api.twitch.tv/helix/{endpoint}"
-        headers = {
-            "Client-ID": self.client_id,
-            "Authorization": f'Bearer {self.token.replace("oauth:", "")}',
-        }
-
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            if response.status_code == 401:
-                if self._handle_expired_access():
-                    headers["Authorization"] = (
-                        f'Bearer {self.token.replace("oauth:", "")}'
-                    )
-                    response = requests.get(
-                        url, headers=headers, params=params, timeout=10
-                    )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            logger.error(
-                "[TwitchChatListener] API error: %s", translate_text(str(e), self.lang)
-            )
-            return None
-
-    def _get_user_info(self, username):
-        return self._fetch("users", {"login": username})
 
     def _parse_message(self, line):
         try:
@@ -371,7 +334,7 @@ class TwitchChatListener:
                     }
         except Exception as e:
             self.on_error(
-                f"{_(self.lang, "Error parsing message")}. {translate_text(str(e), self.lang)}"
+                f"{_(self.lang, 'Error parsing message')}. {translate_text(str(e), self.lang)}"
             )
 
         return None
@@ -469,6 +432,6 @@ class TwitchChatListener:
             return True
         except Exception as e:
             self.on_error(
-                f"{_(self.lang, "Runtime error")}. {translate_text(str(e), self.lang)}"
+                f"{_(self.lang, 'Runtime error')}. {translate_text(str(e), self.lang)}"
             )
             return False

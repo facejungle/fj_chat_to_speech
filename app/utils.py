@@ -5,19 +5,50 @@ import os
 import platform
 import re
 import sys
-from typing import Iterable
+from typing import Iterable, TextIO
 
+import sounddevice as sd
 import num2words
 import urllib
 
 import transformers
-from torch import hub
 
 from app.constants import APP_NAME
 from app.translations import _
 
+_detoxify_ = None
+_detoxify_impl_ = None
+_torch_hub_ = None
 
-class _NullStream:
+
+def get_detoxify_impl():
+    global _detoxify_impl_
+    if _detoxify_impl_ is None:
+        import detoxify.detoxify as detoxify_impl
+
+        _detoxify_impl_ = detoxify_impl
+    return _detoxify_impl_
+
+
+def get_torch_hub():
+    global _torch_hub_
+    if _torch_hub_ is None:
+        from torch import hub as torch_hub
+
+        _torch_hub_ = torch_hub
+    return _torch_hub_
+
+
+def get_detoxify():
+    global _detoxify_
+    if _detoxify_ is None:
+        from detoxify import Detoxify
+
+        _detoxify_ = Detoxify
+    return _detoxify_
+
+
+class _NullStream(TextIO):
     """Fallback stream used when GUI builds have no stdio handles."""
 
     encoding = "utf-8"
@@ -83,10 +114,12 @@ def configure_torch_hub_cache():
     os.environ.setdefault("XDG_CACHE_HOME", cache_root)
     os.environ.setdefault("TORCH_HOME", torch_home)
     os.makedirs(torch_hub_dir, exist_ok=True)
+    hub = get_torch_hub()
     hub.set_dir(torch_hub_dir)
 
 
 def find_cached_silero_repo():
+    hub = get_torch_hub()
     hub_dir = hub.get_dir()
     if not os.path.isdir(hub_dir):
         return None
@@ -103,6 +136,19 @@ def find_cached_silero_repo():
         return None
     return max(repo_candidates, key=os.path.getmtime)
 
+
+def clear_cache_silero():
+    hub = get_torch_hub()
+    hub_dir = hub.get_dir()
+    if not os.path.isdir(hub_dir):
+        return
+
+    prefix = "snakers4_silero-models_"
+    for entry in os.listdir(hub_dir):
+        if entry.startswith(prefix):
+            repo_path = os.path.join(hub_dir, entry)
+            if os.path.isdir(repo_path):
+                os.system('rmdir /S /Q "{}"'.format(repo_path))
 
 def detoxify_get_model_and_tokenizer_local_only(
     model_type,
@@ -134,6 +180,7 @@ def detoxify_get_model_and_tokenizer_local_only(
 
 
 def find_cached_detoxify_checkpoint(model_type="multilingual"):
+    hub = get_torch_hub()
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
@@ -190,6 +237,7 @@ def clear_cache_detoxify():
     if os.path.isdir(hf_snapshots_dir):
         os.system('rmdir /S /Q "{}"'.format(hf_snapshots_dir))
 
+    hub = get_torch_hub()
     hub_dir = hub.get_dir()
     checkpoints_dir = os.path.join(hub_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
@@ -205,68 +253,151 @@ def clear_cache_detoxify():
 
 
 def clean_symbol_spam(text: str) -> str:
-    """Drop tokens that look like repetitive gibberish spam."""
-    token = str(text or "").strip()
-    if len(token) < 6:
+    if not isinstance(text, str) or not text:
         return text
-    # spam_replacement = "".join(dict.fromkeys(token)) + "..."
 
-    if re.fullmatch(r"[-+]?\d+(?:[.,]\d+)?", token):
-        return token
+    _text = text
+    if re.search(r"(.)\1{3,}", text):
+        _text = re.sub(r"(.)\1{3,}", r"\1", text)
 
-    lowered = token.lower()
-    alpha = re.sub(r"[^a-zа-яё]", "", lowered)
-    digits = re.sub(r"\D", "", lowered)
-    alnum = re.sub(r"[^a-zа-яё0-9]", "", lowered)
+    # If the message already looks like human language (after collapsing repeats),
+    # do not attempt to remove separators/spaces — it causes long messages to be glued.
+    if _is_normal_text(_text):
+        return _text
 
-    def _has_strong_periodic_pattern(s: str, min_len: int) -> bool:
-        if len(s) < min_len:
-            return False
-        # Catch patterns like "adadadada...", "zxczxczxc...", "123123123..."
-        for period in range(1, min(8, len(s) // 2 + 1)):
-            block = s[:period]
-            repeats = len(s) // period
-            if repeats < 4:
-                continue
-            if block * repeats == s[: repeats * period]:
-                tail = s[repeats * period :]
-                # Allow a short noisy tail: still spam if most of token is periodic.
-                if len(tail) <= max(2, period):
+    _text_ = _text.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+    if not _is_normal_text(_text_):
+        _text = _text_
+
+    if _is_normal_text(_text):
+        return _text
+
+    words = re.findall(r"[a-zа-яё0-9]+", _text.lower())
+
+    cleaned = []
+    for w in words:
+        w = _clean_word(w)
+        if w:
+            cleaned.append(w)
+
+    deduped = []
+    for w in cleaned:
+        if not deduped or deduped[-1] != w:
+            deduped.append(w)
+
+    if len(deduped) > 3 and len(set(deduped)) <= 2:
+        return deduped[0]
+
+    return " ".join(deduped)
+
+
+def _is_normal_text(text: str) -> bool:
+    if text.rstrip().endswith((".", "!", "?")):
+        words = text.split()
+        if len(words) > 1:
+            sentences = re.split(r"[.!?]+", text)
+            for s in sentences:
+                s = s.strip()
+                if s and s[0].isupper():
                     return True
-                if len(block * repeats) / len(s) >= 0.85:
-                    return True
+
+    has_uppercase = any(c.isupper() for c in text if c.isalpha())
+    has_punctuation = any(c in text for c in ".!?,;:-")
+
+    letters = sum(c.isalpha() for c in text)
+    total = len(text.strip())
+    if total == 0:
         return False
 
-    if alpha:
-        if re.search(r"(.)\1{4,}", alpha):
-            return f"{token[:3]}..."
-        if re.search(r"([a-zа-яё]{1,4})\1{4,}", alpha):
-            return ""
-        if _has_strong_periodic_pattern(alpha, min_len=10):
-            return ""
-        unique_ratio = len(set(alpha)) / len(alpha)
-        if len(alpha) >= 14 and unique_ratio < 0.34:
-            return ""
+    letter_ratio = letters / total
 
-    if digits:
-        if re.search(r"(\d{1,6})\1{3,}", digits):
-            return ""
-        if _has_strong_periodic_pattern(digits, min_len=10):
-            return ""
+    tokens = re.findall(r"[^\W_]+", text, flags=re.UNICODE)
+    meaningful_tokens = [t for t in tokens if len(t) >= 3]
+    if len(meaningful_tokens) >= 4:
+        token_lengths_sum = sum(len(t) for t in meaningful_tokens)
+        avg_token_len = token_lengths_sum / len(meaningful_tokens) if meaningful_tokens else 0
+        tokens_lower = [t.lower() for t in meaningful_tokens]
+        unique_token_ratio = (len(set(tokens_lower)) / len(tokens_lower)) if tokens_lower else 0
+        if letter_ratio >= 0.6 and avg_token_len >= 4 and unique_token_ratio >= 0.25:
+            return True
 
-    if alnum and _has_strong_periodic_pattern(alnum, min_len=12):
+    unique_chars = len(set(text.lower()))
+    unique_ratio_denom = min(total, 80)
+    unique_ratio = unique_chars / unique_ratio_denom if unique_ratio_denom > 0 else 0
+
+    return (letter_ratio > 0.5 or (has_punctuation and has_uppercase)) and unique_ratio > 0.3
+
+
+def _clean_word(word: str) -> str:
+    if len(word) < 2:
+        return word
+
+    if re.fullmatch(r"\d+(?:[.,]\d+)?", word):
+        if _is_repetitive(word):
+            return ""
+        if _is_low_diversity(word, min_len=5):
+            return ""
+        if len(word) >= 8:
+            for block_len in range(1, min(5, len(word) // 2)):
+                if len(word) % block_len == 0:
+                    block = word[:block_len]
+                    if block * (len(word) // block_len) == word and len(word) // block_len >= 2:
+                        return ""
+        return word
+
+    word = _collapse_repeats(word)
+
+    if _is_repetitive(word) or _is_low_diversity(word):
         return ""
 
-    return text
+    return word
 
 
-def clean_message(text: str, ui_lang: str) -> str:
+def _collapse_repeats(s: str) -> str:
+    if len(s) < 2:
+        return s
+    result = [s[0]]
+    for ch in s[1:]:
+        if ch != result[-1]:
+            result.append(ch)
+    return "".join(result)
+
+
+def _is_repetitive(s: str, min_repeats: int = 3, max_block: int = 4) -> bool:
+    length = len(s)
+    for block_len in range(1, min(max_block, length // 2) + 1):
+        if length % block_len != 0:
+            continue
+        block = s[:block_len]
+        repeats = length // block_len
+        if repeats >= min_repeats and block * repeats == s:
+            return True
+    return False
+
+
+def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> bool:
+    if len(s) < min_len:
+        return False
+    unique_ratio = len(set(s)) / len(s)
+    return unique_ratio < threshold
+
+
+def clean_message(
+    text: str, lang: str, ui_lang: str = "en", convert_numbers: bool = True, clean_spam: bool = True
+) -> str:
     """Clean message from garbage"""
-
     text = str(text or "")
 
-    text = re.sub(r"https?://\S+", f":{_(ui_lang, 'Link')}:", text)
-    text = re.sub(r"www\.\S+", f":{_(ui_lang, 'Link')}:", text)
+    text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", " ", text)
+    text = re.sub(r":[A-Za-z0-9_+-]{1,64}:", " ", text)
+    text = text.strip()
+
+    if not text:
+        return ""
+
+    link_text = _(ui_lang, "Link")
+    text = re.sub(r"https?://\S+", f" -{link_text}- ", text)
+    text = re.sub(r"www\.\S+", f" -{link_text}- ", text)
 
     emoji_pattern = re.compile(
         "["
@@ -288,14 +419,23 @@ def clean_message(text: str, ui_lang: str) -> str:
     text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
 
     text = re.sub(r"\s+", " ", text)
-    text = text.strip()
+    if convert_numbers:
+        text = convert_numbers_to_words(text, lang)
+    if clean_spam:
+        text = clean_symbol_spam(text.strip())
+    return text.strip()
 
-    text_arr = []
-    for word in text.split(" "):
-        cleaned_text = clean_symbol_spam(word)
-        if cleaned_text:
-            text_arr.append(cleaned_text)
-    return " ".join(text_arr)
+
+def load_stop_words(lang):
+    source_path = resource_path(f"spam_filter/{lang}.txt")
+    try:
+        with open(source_path, "r", encoding="utf-8") as file:
+            return tuple(line.strip() for line in file if line.strip())
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        pass
+    return tuple()
 
 
 def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
@@ -313,12 +453,20 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
         return False
 
     text_lower = text.lower()
-    text_words = text_lower.split()
+    text_lower = text.replace("ё", "е")
+    text_words = re.split(r"[\s\-_]+", text_lower)
+    text_words_join = "".join(text_words)
 
-    if any(word in stop_words for word in text_words):
-        return True
+    # if any(word in stop_words for word in text_words):
+    for word in text_words:
+        if word in stop_words:
+            return True
 
-    # if any(stop_word.lower() in text_lower for stop_word in stop_words):
+    for stop_word in stop_words:
+        if len(stop_word) >= 4 and (stop_word in text_lower or stop_word in text_words_join):
+            return True
+
+    # if any(len(stop_word) >= 4 and stop_word in text_words_join for stop_word in stop_words):
     #     return True
 
     return False
@@ -373,12 +521,14 @@ def convert_numbers_to_words(text: str, lang: str) -> str:
                 parts = num.split(".")
                 integer_part = num2words.num2words(int(parts[0]), lang=lang)
                 fractional_part = num2words.num2words(int(parts[1]), lang=lang)
-                return f"{integer_part} {_(lang, 'point')} {fractional_part}"
+                return f" {integer_part} {_(lang, 'point')} {fractional_part} "
             elif "," in num:
                 parts = num.split(",")
-                return num2words.num2words(int("".join(parts)), lang=lang)
+                integer_part = num2words.num2words(int(parts[0]), lang=lang)
+                fractional_part = num2words.num2words(int(parts[1]), lang=lang)
+                return f" {integer_part} {_(lang, 'comma')} {fractional_part} "
             else:
-                return num2words.num2words(int(num), lang=lang)
+                return f" {num2words.num2words(int(num), lang=lang)} "
         except Exception:
             return num
 
@@ -423,6 +573,9 @@ def parse_youtube_video_id(url: str) -> str | None:
                             query_dict = urllib.parse.parse_qs(query)
                             video_id = query_dict.get("v", [None])[0]
 
+                        elif remaining_path.startswith("/live/"):
+                            video_id = remaining_path.split("/")[-1]
+
                         elif remaining_path.startswith("/shorts/"):
                             video_id = remaining_path.split("/")[-1]
 
@@ -460,6 +613,9 @@ def parse_youtube_video_id(url: str) -> str | None:
             if parsed.path in ["/watch", "/watch/"]:
                 query = urllib.parse.parse_qs(parsed.query)
                 video_id = query.get("v", [None])[0]
+
+            elif parsed.path.startswith("/live/"):
+                video_id = parsed.path.split("/")[-1]
 
             elif parsed.path.startswith("/shorts/"):
                 video_id = parsed.path.split("/")[-1]

@@ -190,9 +190,13 @@ def install_dependencies():
     venv_path, pip_path, python_path = venv_result
 
     if PLATFORM == "Darwin":
-        subprocess.run([pip_path, "install", "torch==2.8.0", "torchaudio==2.8.0"], check=True)
+        subprocess.run(
+            [pip_path, "install", "torch==2.8.0", "torchaudio==2.8.0"], check=True
+        )
     else:
-        subprocess.run([pip_path, "install", "-r", "torch.requirements.txt"], check=True)
+        subprocess.run(
+            [pip_path, "install", "-r", "torch.requirements.txt"], check=True
+        )
     subprocess.run([pip_path, "install", "-r", "requirements.txt"], check=True)
 
     print("[PKG] Installing PyInstaller...")
@@ -334,7 +338,9 @@ def main():
                     print(f"   - {file.name} ({size:.2f} MB)")
                 elif file.is_dir() and PLATFORM == "Darwin":
                     try:
-                        size = sum(f.stat().st_size for f in file.rglob("*") if f.is_file()) / (1024 * 1024)
+                        size = sum(
+                            f.stat().st_size for f in file.rglob("*") if f.is_file()
+                        ) / (1024 * 1024)
                         print(f"   - {file.name}/ ({size:.2f} MB)")
                     except:
                         print(f"   - {file.name}/")

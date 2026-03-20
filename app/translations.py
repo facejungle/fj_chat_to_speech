@@ -212,7 +212,9 @@ SYS_LOCALE = locale.getlocale()
 
 DEFAULT_LANGUAGE = (
     "ru"
-    if SYS_LOCALE and SYS_LOCALE[0] and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
+    if SYS_LOCALE
+    and SYS_LOCALE[0]
+    and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
     else "en"
 )
 LANG_CODES = {"en": "English", "ru": "Russian"}

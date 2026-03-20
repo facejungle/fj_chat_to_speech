@@ -95,7 +95,9 @@ class YouTubeChatParser:
             raise AttributeError("not_determine_video_id")
 
         self._stop_chat()
-        self.chat = pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
+        self.chat = pytchat.create(
+            video_id=self.video_id, interruptable=use_interruptable
+        )
         return self.chat
 
     def _emit_messages(self, data, fast: bool = False):
@@ -202,7 +204,9 @@ class YouTubeChatParser:
             if self.disconnect_signal:
                 return
 
-            raise ConnectionError(f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}")
+            raise ConnectionError(
+                f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}"
+            )
 
     def _connect(self):
         errors = 0
@@ -210,7 +214,9 @@ class YouTubeChatParser:
         while errors < self.MAX_RETRIES and not self.disconnect_signal:
             try:
                 if not self._has_live_chat():
-                    self.on_error(f"{_(self.lang, 'connection_failed')}. {_(self.lang, 'video_not_found')}")
+                    self.on_error(
+                        f"{_(self.lang, 'connection_failed')}. {_(self.lang, 'video_not_found')}"
+                    )
                     break
 
                 self._create_chat()
@@ -232,7 +238,9 @@ class YouTubeChatParser:
                 errors += 1
 
                 if "not_determine_video_id" in error_str:
-                    self.on_error(f"{_(self.lang, 'connection_failed')}. {_(self.lang, error_str)}")
+                    self.on_error(
+                        f"{_(self.lang, 'connection_failed')}. {_(self.lang, error_str)}"
+                    )
                     break
 
                 if (
@@ -240,7 +248,9 @@ class YouTubeChatParser:
                     or "Invalid video id" in error_str
                     or "Chat data stream is empty" in error_str
                 ):
-                    self.on_error(f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}")
+                    self.on_error(
+                        f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}"
+                    )
                     break
 
                 self.on_reconnect()
@@ -307,7 +317,9 @@ class YouTubeChatParser:
 
         except Exception as e:
             if not self.disconnect_signal:
-                self.on_error(f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}")
+                self.on_error(
+                    f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}"
+                )
 
         finally:
             self.disconnect()

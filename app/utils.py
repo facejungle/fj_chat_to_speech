@@ -90,7 +90,9 @@ def get_user_data_dir() -> str:
         appdata = os.getenv("APPDATA")
         if appdata:
             return os.path.join(appdata, APP_NAME)
-    return os.path.join(os.path.expanduser("~"), f".{APP_NAME.lower().replace(' ', '_')}")
+    return os.path.join(
+        os.path.expanduser("~"), f".{APP_NAME.lower().replace(' ', '_')}"
+    )
 
 
 def get_settings_path() -> str:
@@ -149,6 +151,7 @@ def clear_cache_silero():
             repo_path = os.path.join(hub_dir, entry)
             if os.path.isdir(repo_path):
                 os.system('rmdir /S /Q "{}"'.format(repo_path))
+
 
 def detoxify_get_model_and_tokenizer_local_only(
     model_type,
@@ -215,8 +218,12 @@ def find_cached_detoxify_checkpoint(model_type="multilingual"):
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     hf_config_path = None
-    hf_cache_root = os.getenv("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
-    hf_snapshots_dir = os.path.join(hf_cache_root, "hub", "models--xlm-roberta-base", "snapshots")
+    hf_cache_root = os.getenv("HF_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache", "huggingface"
+    )
+    hf_snapshots_dir = os.path.join(
+        hf_cache_root, "hub", "models--xlm-roberta-base", "snapshots"
+    )
     if os.path.isdir(hf_snapshots_dir):
         snapshots = [
             os.path.join(hf_snapshots_dir, entry)
@@ -231,7 +238,9 @@ def find_cached_detoxify_checkpoint(model_type="multilingual"):
 
 
 def clear_cache_detoxify():
-    hf_cache_root = os.getenv("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    hf_cache_root = os.getenv("HF_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache", "huggingface"
+    )
     hf_snapshots_dir = os.path.join(hf_cache_root, "hub", "models--xlm-roberta-base")
 
     if os.path.isdir(hf_snapshots_dir):
@@ -315,9 +324,13 @@ def _is_normal_text(text: str) -> bool:
     meaningful_tokens = [t for t in tokens if len(t) >= 3]
     if len(meaningful_tokens) >= 4:
         token_lengths_sum = sum(len(t) for t in meaningful_tokens)
-        avg_token_len = token_lengths_sum / len(meaningful_tokens) if meaningful_tokens else 0
+        avg_token_len = (
+            token_lengths_sum / len(meaningful_tokens) if meaningful_tokens else 0
+        )
         tokens_lower = [t.lower() for t in meaningful_tokens]
-        unique_token_ratio = (len(set(tokens_lower)) / len(tokens_lower)) if tokens_lower else 0
+        unique_token_ratio = (
+            (len(set(tokens_lower)) / len(tokens_lower)) if tokens_lower else 0
+        )
         if letter_ratio >= 0.6 and avg_token_len >= 4 and unique_token_ratio >= 0.25:
             return True
 
@@ -325,7 +338,9 @@ def _is_normal_text(text: str) -> bool:
     unique_ratio_denom = min(total, 80)
     unique_ratio = unique_chars / unique_ratio_denom if unique_ratio_denom > 0 else 0
 
-    return (letter_ratio > 0.5 or (has_punctuation and has_uppercase)) and unique_ratio > 0.3
+    return (
+        letter_ratio > 0.5 or (has_punctuation and has_uppercase)
+    ) and unique_ratio > 0.3
 
 
 def _clean_word(word: str) -> str:
@@ -341,7 +356,10 @@ def _clean_word(word: str) -> str:
             for block_len in range(1, min(5, len(word) // 2)):
                 if len(word) % block_len == 0:
                     block = word[:block_len]
-                    if block * (len(word) // block_len) == word and len(word) // block_len >= 2:
+                    if (
+                        block * (len(word) // block_len) == word
+                        and len(word) // block_len >= 2
+                    ):
                         return ""
         return word
 
@@ -383,7 +401,11 @@ def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> boo
 
 
 def clean_message(
-    text: str, lang: str, ui_lang: str = "en", convert_numbers: bool = True, clean_spam: bool = True
+    text: str,
+    lang: str,
+    ui_lang: str = "en",
+    convert_numbers: bool = True,
+    clean_spam: bool = True,
 ) -> str:
     """Clean message from garbage"""
     text = str(text or "")
@@ -463,7 +485,9 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
             return True
 
     for stop_word in stop_words:
-        if len(stop_word) >= 4 and (stop_word in text_lower or stop_word in text_words_join):
+        if len(stop_word) >= 4 and (
+            stop_word in text_lower or stop_word in text_words_join
+        ):
             return True
 
     # if any(len(stop_word) >= 4 and stop_word in text_words_join for stop_word in stop_words):
@@ -539,7 +563,13 @@ def convert_numbers_to_words(text: str, lang: str) -> str:
 
 def parse_youtube_video_id(url: str) -> str | None:
     try:
-        if url and "/" not in url and "?" not in url and "#" not in url and "." not in url:
+        if (
+            url
+            and "/" not in url
+            and "?" not in url
+            and "#" not in url
+            and "." not in url
+        ):
             return url
 
         if url.startswith("watch?v="):
@@ -562,7 +592,9 @@ def parse_youtube_video_id(url: str) -> str | None:
 
                 if possible_domain in allowed_domains:
                     netloc = possible_domain
-                    remaining_path = "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else ""
+                    remaining_path = (
+                        "/" + "/".join(path_parts[1:]) if len(path_parts) > 1 else ""
+                    )
                     query = parsed.query
 
                     if netloc == "youtu.be":
@@ -583,7 +615,9 @@ def parse_youtube_video_id(url: str) -> str | None:
                             video_id = remaining_path.split("/")[-1]
 
                     elif netloc == "studio.youtube.com" and "/video/" in remaining_path:
-                        path_parts_clean = [part for part in remaining_path.split("/") if part]
+                        path_parts_clean = [
+                            part for part in remaining_path.split("/") if part
+                        ]
                         if "video" in path_parts_clean:
                             video_index = path_parts_clean.index("video")
                             if video_index + 1 < len(path_parts_clean):

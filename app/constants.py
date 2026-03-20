@@ -1,5 +1,5 @@
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 
 PADDING = 20
 VOICES = {
@@ -30,9 +30,19 @@ VOICES = {
 }
 
 MODELS = {
-    "ru": "v5_1_ru",
+    "ru": "v5_3_ru",
     "en": "v3_en",
 }
+
+SPEECH_RATE_INDEX = {
+    0: "x-slow",
+    1: "slow",
+    2: "medium",
+    3: "fast",
+    4: "x-fast",
+}
+
+SAMPLE_RATE = 48000
 
 DEFAULTS = {
     "voice": "random",
@@ -43,11 +53,11 @@ DEFAULTS = {
     "read_filter": ("Regular", "Donation", "Sponsor", "Author", "Moderator"),
     "auto_translate": False,
     "buffer_maxsize": 5,
-    "min_msg_length": 2,
-    "max_msg_length": 180,
+    "min_text_length": 2,
+    "max_text_length": 300,
     "toxic_sense": 0.6,
     "ban_limit": 5,
     "volume": 100,
-    "speech_rate": 1.0,
+    "speech_rate": "medium",
     "speech_delay": 1.5,
 }

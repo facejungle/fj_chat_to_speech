@@ -105,6 +105,7 @@ TRANSLATIONS = {
         "Audio playback error": "Ошибка воспроизведения аудио",
         "Error convert text to speech": "Ошибка конвертирования текста в речь",
         "point": "точка",
+        "comma": "запятая",
         "English": "Английский",
         "Russian": "Русский",
         "Interface Language": "Язык интерфейса",
@@ -130,6 +131,7 @@ TRANSLATIONS = {
         "Clear queue": "Очистить очередь",
         "File": "Файл",
         "File saved": "Файл сохранён",
+        "Failed to save file": "Не удалось сохранить файл",
         "Log cleared": "Лог очищен",
         "Queue cleared": "Очередь очищена",
         "Saved": "Сохранено",
@@ -166,7 +168,9 @@ TRANSLATIONS = {
         "Read platform name": "Озвучивать название платформы",
         "youtube": "Ютуб",
         "twitch": "Твич",
-        "Message from": "Сообщение из",
+        "Message on": "Сообщение на",
+        "Message from": "Сообщение от",
+        "from": "от",
         "random": "случайно",
         "Toxicity threshold": "Порог токсичности",
         "Toxicity": "Токсичность",
@@ -193,7 +197,6 @@ TRANSLATIONS = {
         "Poll is updated": "Голосование обновлено",
         "Poll is closed": "Голосование закрыто",
         "Poll": "Голосование",
-        "comma": "запятая",
         "Read messages": "Озвучивание сообщений",
         "Regular": "Обычный",
         "Sponsor": "Спонсор",
@@ -209,9 +212,7 @@ SYS_LOCALE = locale.getlocale()
 
 DEFAULT_LANGUAGE = (
     "ru"
-    if SYS_LOCALE
-    and SYS_LOCALE[0]
-    and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
+    if SYS_LOCALE and SYS_LOCALE[0] and (SYS_LOCALE[0].startswith("Russian") or SYS_LOCALE[0].startswith("ru_"))
     else "en"
 )
 LANG_CODES = {"en": "English", "ru": "Russian"}
@@ -253,6 +254,18 @@ _CYR_TO_LAT = {
 }
 
 _LAT_TO_CYR = {
+    "shch": "щ",
+    "sch": "щ",
+    "yo": "ё",
+    "zh": "ж",
+    "kh": "х",
+    "ts": "ц",
+    "ch": "ч",
+    "sh": "ш",
+    "yu": "ю",
+    "ya": "я",
+    "ye": "е",
+    "&": " и ",
     "a": "а",
     "b": "б",
     "c": "ц",
@@ -262,7 +275,7 @@ _LAT_TO_CYR = {
     "g": "г",
     "h": "х",
     "i": "и",
-    "j": "й",
+    "j": "дж",
     "k": "к",
     "l": "л",
     "m": "м",
@@ -280,6 +293,7 @@ _LAT_TO_CYR = {
     "y": "ы",
     "z": "з",
 }
+_LAT_TO_CYR_MAX_KEY_LEN = max(len(key) for key in _LAT_TO_CYR)
 
 
 def _map_char_with_case(ch: str, mapping: dict[str, str]) -> str:
@@ -305,7 +319,28 @@ def transliteration(text: str, lang: str) -> str:
     if target == "en":
         return "".join(_map_char_with_case(ch, _CYR_TO_LAT) for ch in src)
     if target == "ru":
-        return "".join(_map_char_with_case(ch, _LAT_TO_CYR) for ch in src)
+        out = []
+        i = 0
+        n = len(src)
+        while i < n:
+            matched = None
+            max_len = min(_LAT_TO_CYR_MAX_KEY_LEN, n - i)
+            for size in range(max_len, 0, -1):
+                chunk = src[i : i + size]
+                mapped = _LAT_TO_CYR.get(chunk.lower())
+                if mapped is None:
+                    continue
+                if chunk.isalpha() and chunk.isupper():
+                    mapped = mapped[:1].upper() + mapped[1:]
+                matched = mapped
+                i += size
+                break
+            if matched is None:
+                out.append(src[i])
+                i += 1
+            else:
+                out.append(matched)
+        return "".join(out)
     return src
 
 
@@ -316,25 +351,19 @@ def _(lang, key):
 
 def _proc_translate_external(q, txt, dst):
     """Module-level worker for multiprocessing spawn on Windows."""
-    try:
-        tr = Translator()
-        r = tr.translate(txt, dest=dst)
-        if inspect.isawaitable(r):
-            r = asyncio.run(r)
-        q.put(getattr(r, "text", txt))
-    except Exception as e:
-        try:
-            q.put({"__err__": str(e)})
-        except Exception:
-            pass
+    tr = Translator()
+    r = tr.translate(txt, dest=dst)
+    if inspect.isawaitable(r):
+        r = asyncio.run(r)
+    q.put(getattr(r, "text", txt))
 
 
-def translate_text(text, dest):
+def translate_text(text, dest="en"):
     try:
         q = multiprocessing.Queue()
         _proc_translate_external(q, text, dest)
         return q.get_nowait()
-    except Exception as e:
+    except:
         # self.add_sys_message(
         #     author="_translate_text()",
         #     text=f"{_(self.language, 'Failed to translate text')}. {e}",

@@ -3,6 +3,7 @@ from time import sleep
 import pytchat
 from pytchat.core import PytchatCore
 import re
+from threading import Thread, current_thread, main_thread
 from urllib.request import Request, urlopen
 
 from app.translations import _, translate_text
@@ -97,8 +98,15 @@ class YouTubeChatParser:
         self.chat = pytchat.create(video_id=self.video_id, interruptable=use_interruptable)
         return self.chat
 
-    def _emit_messages(self, data):
-        for message in data.sync_items():
+    def _emit_messages(self, data, fast: bool = False):
+        if fast:
+            items = getattr(data, "items", None)
+            if items is None:
+                items = data.sync_items()
+        else:
+            items = data.sync_items()
+
+        for message in items:
             author_details = getattr(message, "author", None)
             if author_details is None:
                 continue
@@ -242,6 +250,67 @@ class YouTubeChatParser:
                 sleep(errors * 2)
 
         self.disconnect()
+
+    def parse_old_chat(self):
+        if not self.video_id:
+            self.on_error(_(self.lang, "not_determine_video_id"))
+            return
+
+        self.disconnect_signal = False
+
+        try:
+            use_interruptable = current_thread() is main_thread()
+            self._stop_chat()
+
+            try:
+                self.chat = pytchat.create(
+                    video_id=self.video_id,
+                    interruptable=use_interruptable,
+                    force_replay=True,
+                )
+            except TypeError:
+                self.chat = pytchat.create(
+                    video_id=self.video_id,
+                    interruptable=use_interruptable,
+                )
+
+            if not self.chat:
+                self.on_error(_(self.lang, "video_not_found"))
+                return
+
+            data = self.chat.get()
+            raise_for_status = getattr(self.chat, "raise_for_status", None)
+            if callable(raise_for_status):
+                raise_for_status()
+
+            if not self.chat.is_replay():
+                self.on_error(_(self.lang, "video_not_found"))
+                return
+
+            self.on_connect()
+            if data is not None:
+                self._emit_messages(data, fast=True)
+
+            while self.chat and self.chat.is_alive() and not self.disconnect_signal:
+                data = self.chat.get()
+
+                items = getattr(data, "items", None)
+                had_items = bool(items)
+                self._emit_messages(data, fast=True)
+
+                raise_for_status = getattr(self.chat, "raise_for_status", None)
+                if callable(raise_for_status):
+                    raise_for_status()
+
+                if (not had_items) and getattr(self.chat, "continuation", None) is None:
+                    break
+
+        except Exception as e:
+            if not self.disconnect_signal:
+                self.on_error(f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}")
+
+        finally:
+            self.disconnect()
 
     def disconnect(self):
         self.disconnect_signal = True

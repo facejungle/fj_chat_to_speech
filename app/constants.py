@@ -1,5 +1,5 @@
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 
 PADDING = 20
 VOICES = {
@@ -57,6 +57,7 @@ DEFAULTS = {
     "max_text_length": 300,
     "toxic_sense": 0.6,
     "ban_limit": 5,
+    "font_size": 12,
     "volume": 100,
     "speech_rate": "medium",
     "speech_delay": 1.5,

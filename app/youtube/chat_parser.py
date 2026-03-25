@@ -38,6 +38,7 @@ class YouTubeChatParser:
         self.on_reconnect = on_reconnect
         self.on_error = on_error
         self.disconnect_signal = False
+        self.is_connected = False
         self.lang = lang
 
         self.chat: PytchatCore | None = None
@@ -101,6 +102,9 @@ class YouTubeChatParser:
         return self.chat
 
     def _emit_messages(self, data, fast: bool = False):
+        if self.disconnect_signal:
+            return
+
         if fast:
             items = getattr(data, "items", None)
             if items is None:
@@ -109,6 +113,9 @@ class YouTubeChatParser:
             items = data.sync_items()
 
         for message in items:
+            if self.disconnect_signal:
+                return
+
             author_details = getattr(message, "author", None)
             if author_details is None:
                 continue
@@ -210,6 +217,7 @@ class YouTubeChatParser:
 
     def _connect(self):
         errors = 0
+        self.is_connected = True
 
         while errors < self.MAX_RETRIES and not self.disconnect_signal:
             try:
@@ -327,7 +335,9 @@ class YouTubeChatParser:
     def disconnect(self):
         self.disconnect_signal = True
         self._stop_chat()
-        self.on_disconnect()
+        if self.is_connected:
+            self.on_disconnect()
+        self.is_connected = False
 
     def run(self):
         th = Thread(target=self._connect, daemon=True)

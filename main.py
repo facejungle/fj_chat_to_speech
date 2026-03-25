@@ -49,7 +49,8 @@ import numpy as np
 from googletrans import Translator
 from torch import no_grad, set_num_threads
 
-from app.chat_message import ChatMessageDelegate, ChatMessageListModel
+from app.chat_message import ChatMessage, ChatMessageDelegate, ChatMessageListModel
+from app.chat_overlay import ChatOverlayWindow
 from app.menu_combo_check_box import MenuComboCheckBox
 from app.schema import MessageStatsTD, TwitchCredentialsTD
 from app.translations import (
@@ -72,14 +73,14 @@ from app.constants import (
     MODELS,
 )
 from app.utils import (
-    avatar_colors_from_name,
+    clean_emoji,
     clean_message,
+    clean_stop_words,
     clean_symbol_spam,
     clear_cache_detoxify,
     clear_cache_silero,
     configure_torch_hub_cache,
     contain_words_or_nums,
-    contains_stop_words,
     convert_numbers_to_words,
     detoxify_get_model_and_tokenizer_local_only,
     find_cached_detoxify_checkpoint,
@@ -123,7 +124,7 @@ logger = Logger("main")
 set_num_threads(max(1, os.cpu_count() or 1))
 
 
-class ChatMessage(TypedDict):
+class PlatformMessage(TypedDict):
     msg_id: str
     platform: str
     author: str
@@ -137,9 +138,9 @@ class ChatMessage(TypedDict):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowTitle(APP_NAME)
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
-        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1200, 600)
 
         self.root_widget = QWidget()
@@ -157,6 +158,7 @@ class MainWindow(QMainWindow):
         self.read_filter = DEFAULTS["read_filter"]
         self.auto_translate = DEFAULTS["auto_translate"]
 
+        self.font_size = DEFAULTS["font_size"]
         self.volume = DEFAULTS["volume"]
         self.speech_rate = DEFAULTS["speech_rate"]
         self.speech_delay = DEFAULTS["speech_delay"]
@@ -168,6 +170,9 @@ class MainWindow(QMainWindow):
         self.stop_words = tuple()
         self.chat_only_mode = False
         self.is_paused = False
+        self.is_chat_window_opened = False
+        self.chat_window = None
+        self.chat_window_geometry = None
 
         # Connections
         self.youtube = None
@@ -439,9 +444,14 @@ class MainWindow(QMainWindow):
 
         self.font_size_combo = QComboBox()
         self.font_size_combo.addItems([str(s) for s in range(8, 24, 2)])
-        self.font_size_combo.setCurrentIndex(2)
+        self.font_size_combo.setCurrentText(str(self.font_size))
         self.font_size_combo.currentIndexChanged.connect(self.font_size_changed)
         chat_header_layout.addWidget(self.font_size_combo)
+
+        self.chat_window_button = QPushButton()
+        self.chat_window_button.clicked.connect(self.on_chat_window)
+        self.update_chat_window_button_text()
+        chat_header_layout.addWidget(self.chat_window_button)
 
         self.clear_log_button = QPushButton(_(self.language, "Clear log"))
         self.clear_log_button.clicked.connect(self.clear_log)
@@ -462,9 +472,8 @@ class MainWindow(QMainWindow):
         self.chat_text.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.chat_text.setSpacing(4)
         self.chat_model = ChatMessageListModel(self.chat_text)
-        self.chat_delegate = ChatMessageDelegate(self.chat_text)
         self.chat_text.setModel(self.chat_model)
-        self.chat_text.setItemDelegate(self.chat_delegate)
+        self.chat_text.setItemDelegate(ChatMessageDelegate(self.chat_text))
         self.root_layout.addWidget(self.chat_text)
 
         # Timer to flush messages added from background threads
@@ -620,6 +629,7 @@ class MainWindow(QMainWindow):
         # self.chat_header_label.setText(_(self.language, "Message Log"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
+        self.update_chat_window_button_text()
         self.pause_button.setText(
             _(self.language, "Stopped")
             if self.is_paused
@@ -653,11 +663,14 @@ class MainWindow(QMainWindow):
         self.read_filter = self.read_filter_combo.getSelected()
 
     def font_size_changed(self, index):
-        font_size = int(self.font_size_combo.currentText())
+        self.font_size = int(self.font_size_combo.currentText())
         font = self.chat_text.font()
-        font.setPointSize(font_size)
+        font.setPointSize(self.font_size)
         self.chat_text.setFont(font)
         self.chat_text.doItemsLayout()
+        if self.chat_window is not None:
+            self.chat_window.chat_view.setFont(font)
+            self.chat_window.chat_view.doItemsLayout()
 
     def on_configure_twitch(self):
         if getattr(self, "dlg", False) and self.dlg:
@@ -845,7 +858,7 @@ class MainWindow(QMainWindow):
                 is_donate=False,
             ):
                 self.process_message_queue.put_nowait(
-                    ChatMessage(
+                    PlatformMessage(
                         msg_id=msg_id,
                         platform="Twitch",
                         author=author,
@@ -996,7 +1009,7 @@ class MainWindow(QMainWindow):
                 is_donate=False,
             ):
                 self.process_message_queue.put_nowait(
-                    ChatMessage(
+                    PlatformMessage(
                         msg_id=msg_id,
                         platform="YouTube",
                         author=author,
@@ -1375,18 +1388,60 @@ class MainWindow(QMainWindow):
         if menu_bar is not None:
             menu_bar.setVisible(not chat_only)
         self.statusBar().setVisible(not chat_only)
+
+        self.chat_text.setItemDelegate(
+            ChatMessageDelegate(self.chat_text, hide_system_msg=chat_only)
+        )
+
         if hasattr(self, "connections_widget"):
             self.connections_widget.setVisible(not chat_only)
         if hasattr(self, "chat_header_widget"):
             self.chat_header_widget.setVisible(not chat_only)
-        if (
-            hasattr(self, "chat_only_action")
-            and self.chat_only_action.isChecked() != chat_only
-        ):
-            self.chat_only_action.setChecked(chat_only)
+
+    def update_chat_window_button_text(self):
+        self.chat_window_button.setText(
+            _(self.language, "Close chat window")
+            if self.is_chat_window_opened
+            else _(self.language, "Chat window")
+        )
 
     def toggle_auto_scroll(self, checked):
         self.auto_scroll = checked
+
+    def on_chat_window(self):
+        if self.is_chat_window_opened:
+            if self.chat_window is not None:
+                self.chat_window.close()
+            return
+
+        self.chat_window = ChatOverlayWindow(
+            self, self.chat_model, self.chat_text.font()
+        )
+        if self.chat_window_geometry is not None:
+            self.chat_window.setGeometry(*self.chat_window_geometry)
+        else:
+            self.chat_window.move(self.x() + 40, self.y() + 40)
+        self.chat_window.show()
+        self.is_chat_window_opened = True
+        self.update_chat_window_button_text()
+
+    def on_chat_overlay_closed(self):
+        self.chat_window = None
+        self.is_chat_window_opened = False
+        self.update_chat_window_button_text()
+
+    def save_chat_overlay_geometry(self, window=None):
+        target_window = window or self.chat_window
+        if target_window is None:
+            return
+
+        geometry = target_window.geometry()
+        self.chat_window_geometry = (
+            geometry.x(),
+            geometry.y(),
+            geometry.width(),
+            geometry.height(),
+        )
 
     def clear_log(self):
         self.chat_model.clear()
@@ -1471,6 +1526,7 @@ class MainWindow(QMainWindow):
         self.configure_twitch_button.setText(_(self.language, "Configure"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
+        self.update_chat_window_button_text()
         self.pause_button.setText(
             _(self.language, "Stopped")
             if self.is_paused
@@ -1753,9 +1809,8 @@ class MainWindow(QMainWindow):
             "success": "darkGreen",
         }
 
-        system_text = _(self.language, "System")
         return self.add_message(
-            platform=system_text,
+            platform="system",
             author=author,
             text=text,
             background=status_colors[status],
@@ -1801,31 +1856,33 @@ class MainWindow(QMainWindow):
             return
         self._pending_status_messages.append((text, timeout_ms))
 
-    def _insert_message(self, platform, author, text, color=None, background=None):
-        time_str = datetime.now().strftime("%H:%M:%S")
-        safe_author = str(author)
-        avatar_text = safe_author[:1].upper() if safe_author else "?"
-        avatar_bg, avatar_fg = avatar_colors_from_name(safe_author)
+    def _insert_message(
+        self,
+        platform: str,
+        author: str,
+        text: str,
+        color: str | None = None,
+        background: str | None = None,
+    ):
         scrollbar = self.chat_text.verticalScrollBar()
         prev_scroll_value = scrollbar.value()
 
-        message = {
-            "time": time_str,
-            "platform": str(platform),
-            "author": safe_author,
-            "text": str(text),
-            "color": color or "#ffffff",
-            "background": background or "#444444",
-            "avatar_text": avatar_text,
-            "avatar_bg": avatar_bg,
-            "avatar_fg": avatar_fg,
-        }
+        msg = ChatMessage(
+            time=datetime.now().strftime("%H:%M:%S"),
+            platform=platform,
+            author=author,
+            text=text,
+            color=color,
+            background=background,
+        )
 
         try:
-            self.chat_model.add_message(message)
+            self.chat_model.add_message(msg)
 
             if self.auto_scroll:
                 self.chat_text.scrollToBottom()
+                if self.chat_window is not None:
+                    self.chat_window.chat_view.scrollToBottom()
             else:
                 scrollbar.setValue(prev_scroll_value)
         except Exception:
@@ -1833,6 +1890,9 @@ class MainWindow(QMainWindow):
             pass
 
     def save_settings(self):
+        if self.chat_window is not None:
+            self.save_chat_overlay_geometry()
+
         settings = {
             "language": self.language,
             "voice_language": self.voice_language,
@@ -1845,6 +1905,7 @@ class MainWindow(QMainWindow):
             "read_author_names": self.read_author_names,
             "read_platform_names": self.read_platform_names,
             "read_filter": self.read_filter,
+            "font_size": self.font_size,
             "toxic_sense": self.toxic_sense,
             "ban_limit": self.ban_limit,
             "auto_translate": self.auto_translate,
@@ -1853,6 +1914,7 @@ class MainWindow(QMainWindow):
             "buffer_maxsize": self.buffer_maxsize,
             "yt_credentials": self.yt_credentials,
             "twitch_credentials": self.twitch_credentials,
+            "chat_window_geometry": self.chat_window_geometry,
         }
         with open(get_settings_path(), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
@@ -1880,6 +1942,7 @@ class MainWindow(QMainWindow):
             self.language = settings.get("language", self.language)
             self.voice_language = settings.get("voice_language", self.voice_language)
             self.voice = settings.get("voice", self.voice)
+            self.font_size = settings.get("font_size", self.font_size)
             self.volume = settings.get("volume", self.volume)
             self.speech_rate = settings.get("speech_rate_ssml", self.speech_rate)
             self.speech_delay = settings.get("speech_delay", self.speech_delay)
@@ -1902,6 +1965,13 @@ class MainWindow(QMainWindow):
             self.twitch_credentials = settings.get(
                 "twitch_credentials", twitch_default_credentials
             )
+            chat_window_geometry = settings.get("chat_window_geometry")
+            if (
+                isinstance(chat_window_geometry, list)
+                and len(chat_window_geometry) == 4
+                and all(isinstance(value, int) for value in chat_window_geometry)
+            ):
+                self.chat_window_geometry = tuple(chat_window_geometry)
             if not isinstance(self.twitch_credentials, dict):
                 self.twitch_credentials = twitch_default_credentials
 
@@ -1931,6 +2001,8 @@ class MainWindow(QMainWindow):
         return set()
 
     def closeEvent(self, event):
+        if self.chat_window is not None:
+            self.chat_window.close()
         self.save_settings()
         sd.stop()
         super().closeEvent(event)
@@ -2150,24 +2222,8 @@ class MainWindow(QMainWindow):
             author,
         )
 
-        cleaned_author = clean_message(
-            author,
-            lang=self.voice_language,
-            ui_lang=self.language,
-            convert_numbers=False,
-            clean_spam=False,
-        )
-        cleaned_author = cleaned_author.removeprefix("@")
-        cleaned_text = clean_message(
-            message,
-            lang=self.voice_language,
-            ui_lang=self.language,
-            convert_numbers=False,
-            clean_spam=False,
-        )
-
-        if not cleaned_text:
-            return
+        cleaned_author = author.removeprefix("@")
+        cleaned_text = clean_emoji(message)
 
         platform_author = f"{platform}:{cleaned_author}"
         if platform_author in self.banned_set:
@@ -2185,17 +2241,21 @@ class MainWindow(QMainWindow):
 
         self.processed_messages.add(msg_id)
 
-        if contains_stop_words(cleaned_text, stop_words=self.stop_words):
-            self.process_toxic_message(
-                platform=platform,
-                author=cleaned_author,
-                message=cleaned_text,
-                reason="Stop words",
-                is_staff=is_staff,
-                is_owner=is_owner,
-                severity=0.25,
-            )
+        if self.auto_translate:
+            cleaned_text = translate_text(cleaned_text, self.voice_language)
+
+        cleaned_text = clean_message(
+            cleaned_text,
+            lang=self.voice_language,
+            ui_lang=self.language,
+            convert_numbers=False,
+            clean_spam=False,
+        )
+
+        if not cleaned_text:
             return
+
+        cleaned_text = clean_stop_words(cleaned_text, stop_words=self.stop_words)
 
         toxic_val = self.calc_toxicity(cleaned_text)
         if toxic_val:
@@ -2211,18 +2271,6 @@ class MainWindow(QMainWindow):
                     is_owner=is_owner,
                     severity=detox_value,
                 )
-                return
-
-        if self.auto_translate:
-            cleaned_text = translate_text(cleaned_text, self.voice_language)
-            cleaned_text = clean_message(
-                cleaned_text,
-                lang=self.voice_language,
-                ui_lang=self.language,
-                convert_numbers=False,
-                clean_spam=False,
-            )
-            if not cleaned_text:
                 return
 
         self.add_message(
@@ -2262,6 +2310,13 @@ class MainWindow(QMainWindow):
         if len(cleaned_text) > self.max_text_length:
             cleaned_text = cleaned_text[: self.max_text_length] + "..."
 
+        cleaned_author = clean_message(
+            author,
+            lang=self.voice_language,
+            ui_lang=self.language,
+            convert_numbers=False,
+            clean_spam=False,
+        )
         cleaned_text = self.cleaned_text_to_ssml(platform, cleaned_author, cleaned_text)
 
         self.speak(cleaned_text)
@@ -2507,7 +2562,9 @@ class MainWindow(QMainWindow):
         while True:
             try:
                 try:
-                    msg_data: ChatMessage = self.process_message_queue.get(timeout=0.2)
+                    msg_data: PlatformMessage = self.process_message_queue.get(
+                        timeout=0.2
+                    )
                 except Empty:
                     continue
 

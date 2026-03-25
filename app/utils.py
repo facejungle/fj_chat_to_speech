@@ -79,7 +79,7 @@ def resource_path(relative_path: str) -> str:
 
 def icon_path():
     if platform.system() == "Windows":
-        return "img/icon.ico"
+        return "img\\icon.ico"
     else:
         return "img/icon.png"
 
@@ -400,27 +400,7 @@ def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> boo
     return unique_ratio < threshold
 
 
-def clean_message(
-    text: str,
-    lang: str,
-    ui_lang: str = "en",
-    convert_numbers: bool = True,
-    clean_spam: bool = True,
-) -> str:
-    """Clean message from garbage"""
-    text = str(text or "")
-
-    text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", " ", text)
-    text = re.sub(r":[A-Za-z0-9_+-]{1,64}:", " ", text)
-    text = text.strip()
-
-    if not text:
-        return ""
-
-    link_text = _(ui_lang, "Link")
-    text = re.sub(r"https?://\S+", f" -{link_text}- ", text)
-    text = re.sub(r"www\.\S+", f" -{link_text}- ", text)
-
+def clean_emoji(text):
     emoji_pattern = re.compile(
         "["
         "\U0001f600-\U0001f64f"  # Emoticons
@@ -439,6 +419,27 @@ def clean_message(
     )
     text = emoji_pattern.sub("", text)
     text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
+    text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", "", text)
+    return re.sub(r":[0-9A-Za-z_+-]{1,64}:", "", text).strip()
+
+
+def clean_message(
+    text: str,
+    lang: str,
+    ui_lang: str = "en",
+    convert_numbers: bool = True,
+    clean_spam: bool = True,
+) -> str:
+    """Clean message from garbage"""
+    text = str(text or "")
+    text = re.sub(r"[^0-9A-Za-zА-Яа-яЁё\s!,-.:?]", " ", text).strip()
+
+    if not text:
+        return ""
+
+    link_text = _(ui_lang, "Link")
+    text = re.sub(r"https?://\S+", f" -{link_text}- ", text)
+    text = re.sub(r"www\.\S+", f" -{link_text}- ", text)
 
     text = re.sub(r"\s+", " ", text)
     if convert_numbers:
@@ -476,7 +477,7 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
 
     text_lower = text.lower()
     text_lower = text.replace("ё", "е")
-    text_words = re.split(r"[\s\-_]+", text_lower)
+    text_words = re.split(r"[\s\-_.,!?:()]+", text_lower)
     text_words_join = "".join(text_words)
 
     # if any(word in stop_words for word in text_words):
@@ -494,6 +495,80 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
     #     return True
 
     return False
+
+
+def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
+    if not text or not stop_words:
+        return text
+
+    stop_words_set = set(stop_words)
+    if not stop_words_set:
+        return text
+
+    normalized_text = text.lower().replace("ё", "е")
+    spans = []
+
+    separators = set(" \t\r\n-_.,!?:()")
+
+    # Match exact words using the same separators as contains_stop_words.
+    for match in re.finditer(r"[^\s\-_.,!?:()]+", text):
+        word = match.group(0).lower().replace("ё", "е")
+        if word in stop_words_set:
+            spans.append((match.start(), match.end()))
+
+    long_stop_words = [word for word in stop_words_set if len(word) >= 4]
+
+    # Match contiguous occurrences in normalized text.
+    for stop_word in long_stop_words:
+        start = 0
+        while True:
+            idx = normalized_text.find(stop_word, start)
+            if idx == -1:
+                break
+            spans.append((idx, idx + len(stop_word)))
+            start = idx + 1
+
+    # Match occurrences across separators, like in text_words_join.
+    chars = []
+    index_map = []
+    for idx, char in enumerate(normalized_text):
+        if char not in separators:
+            chars.append(char)
+            index_map.append(idx)
+    joined_text = "".join(chars)
+
+    for stop_word in long_stop_words:
+        start = 0
+        while True:
+            idx = joined_text.find(stop_word, start)
+            if idx == -1:
+                break
+            spans.append((index_map[idx], index_map[idx + len(stop_word) - 1] + 1))
+            start = idx + 1
+
+    if not spans:
+        return text
+
+    spans.sort()
+    merged_spans = []
+    current_start, current_end = spans[0]
+    for start, end in spans[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            merged_spans.append((current_start, current_end))
+            current_start, current_end = start, end
+    merged_spans.append((current_start, current_end))
+
+    result = []
+    last_end = 0
+    for start, end in merged_spans:
+        result.append(text[last_end:start])
+        result.append("-_-")
+        last_end = end
+    result.append(text[last_end:])
+
+    return "".join(result)
 
 
 def contain_words_or_nums(text: str, lang: str = "en") -> bool:

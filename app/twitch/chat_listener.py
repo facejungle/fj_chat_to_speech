@@ -13,6 +13,7 @@ logger = getLogger("main")
 
 
 class TwitchChatListener:
+    TIMEOUT = 3
     MAX_RETRIES = 5
     SERVER = "irc.chat.twitch.tv"
     PORT = 6667
@@ -42,6 +43,7 @@ class TwitchChatListener:
         on_connect,
         on_disconnect,
         on_error,
+        on_reconnect,
         on_expiries_access,
         lang="en",
     ):
@@ -54,6 +56,7 @@ class TwitchChatListener:
         self.on_disconnect = on_disconnect
         self.on_error = on_error
         self.on_expiries_access = on_expiries_access
+        self.on_reconnect = on_reconnect
         self.lang = lang
 
         self.sock = None
@@ -110,8 +113,11 @@ class TwitchChatListener:
 
     def _create_socket(self):
         try:
+            if self.sock:
+                self._close_socket()
+
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(10)
+            self.sock.settimeout(self.TIMEOUT)
             self.sock.connect((self.SERVER, self.PORT))
 
             self._send_command(
@@ -199,6 +205,7 @@ class TwitchChatListener:
 
                 if not self.is_connected:
                     reconnect_attempts += 1
+                    self.on_reconnect()
                     self.on_error(
                         f"{_(self.lang, 'connection_failed')}. {_(self.lang, 'Reconnect')} {reconnect_attempts}/{self.MAX_RETRIES}"
                     )
@@ -206,21 +213,9 @@ class TwitchChatListener:
                     sleep(reconnect_attempts)
                     continue
 
-                else:
-                    self.on_connect()
-
                 reconnect_attempts = 0
-                if self._listen_chat():
-                    return
-
-                if self._is_stopping:
-                    return
-
-                reconnect_attempts += 1
-                self.on_error(
-                    f"{_(self.lang, 'error_fetch_messages')}. {_(self.lang, 'Reconnect')} {reconnect_attempts}/{self.MAX_RETRIES}"
-                )
-                sleep(reconnect_attempts)
+                self.on_connect()
+                self._listen_chat()
 
             if not self._is_stopping:
                 self.on_error(_(self.lang, "connection_failed"))
@@ -341,11 +336,9 @@ class TwitchChatListener:
 
     def _listen_chat(self):
         buffer = ""
+        errors = 0
         try:
-            while self.is_connected and self.sock:
-                if self._is_stopping:
-                    return True
-
+            while self.is_connected and self.sock and not self._is_stopping:
                 if time() - self.last_ping > 60:
                     try:
                         self._send_command("PING")
@@ -356,6 +349,10 @@ class TwitchChatListener:
                 try:
                     data = self.sock.recv(4096).decode("utf-8", errors="ignore")
                 except socket.timeout:
+                    errors += 1
+                    if errors > self.MAX_RETRIES:
+                        self.on_reconnect()
+                        return self._connect()
                     continue
 
                 if not data:
@@ -363,10 +360,7 @@ class TwitchChatListener:
 
                 buffer += data
 
-                while "\r\n" in buffer:
-                    if self._is_stopping:
-                        return True
-
+                while "\r\n" in buffer and not self._is_stopping:
                     line, buffer = buffer.split("\r\n", 1)
 
                     if not line:
@@ -412,6 +406,9 @@ class TwitchChatListener:
                             is_owner=is_owner,
                             is_donate=is_donate,
                         )
+
+                errors = 0
+                sleep(1)
 
             return self._is_stopping
 

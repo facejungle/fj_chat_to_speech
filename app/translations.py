@@ -204,6 +204,8 @@ TRANSLATIONS = {
         "Moderator": "Модератор",
         "skip load": "пропуск загрузки",
         "Load models": "Загрузить модели",
+        "Chat window": "Окно чата",
+        "Close chat window": "Закрыть окно чата",
     },
 }
 

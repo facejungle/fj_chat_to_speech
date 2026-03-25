@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QListView,
     QFrame,
+    QPushButton,
 )
 from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QFont, QIcon, QCloseEvent, QMouseEvent
@@ -18,12 +19,19 @@ from app.utils import icon_path, resource_path
 
 
 class ChatOverlayWindow(QWidget):
-    def __init__(self, parent, model: ChatMessageListModel, font: QFont):
+    def __init__(
+        self,
+        parent,
+        model: ChatMessageListModel,
+        font: QFont,
+        always_on_top: bool = False,
+    ):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self._main_window = parent
         self._drag_offset = None
         self._resize_origin = None
         self._resize_size = None
+        self.always_on_top = always_on_top
         self.setWindowTitle(APP_NAME + " - chat")
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
@@ -53,6 +61,7 @@ class ChatOverlayWindow(QWidget):
         self.title_label.setFont(title_font)
         self.title_label.setStyleSheet("color: white; background: transparent;")
         title_layout.addWidget(self.title_label)
+        title_layout.addStretch(1)
         self.title_bar.installEventFilter(self)
         self.title_label.installEventFilter(self)
         layout.addWidget(self.title_bar)
@@ -84,18 +93,39 @@ class ChatOverlayWindow(QWidget):
         layout.addWidget(self.chat_view)
 
         resize_layout = QHBoxLayout()
+        self.always_on_top_button = QPushButton("^")
+        self.always_on_top_button.setCheckable(True)
+        self.always_on_top_button.setChecked(self.always_on_top)
+        self.always_on_top_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.always_on_top_button.setToolTip("Always On Top")
+        self.always_on_top_button.setStyleSheet(
+            "QPushButton {"
+            "color: white;"
+            "background-color: rgba(255, 255, 255, 24);"
+            "border: 1px solid rgba(255, 255, 255, 45);"
+            "border-radius: 10px;"
+            "padding: 4px 10px;"
+            "}"
+            "QPushButton:checked {"
+            "background-color: rgba(15, 15, 15, 150);"
+            "}"
+        )
+        self.always_on_top_button.clicked.connect(self._toggle_always_on_top)
+        resize_layout.addWidget(self.always_on_top_button)
+        self._toggle_always_on_top(self.always_on_top)
+
         resize_layout.setContentsMargins(0, 0, 8, 8)
         resize_layout.addStretch(1)
-        self.size_grip = QLabel("///", self)
-        self.size_grip.setFixedSize(28, 28)
+        self.size_grip = QLabel("><", self)
+        self.size_grip.setToolTip("Resize")
         self.size_grip.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.size_grip.setCursor(Qt.CursorShape.SizeFDiagCursor)
         self.size_grip.setStyleSheet(
-            "color: rgba(255, 255, 255, 210);"
+            "color: white;"
             "background-color: rgba(15, 15, 15, 150);"
             "border: 1px solid rgba(255, 255, 255, 45);"
+            "padding: 4px 10px;"
             "border-radius: 10px;"
-            "font-weight: bold;"
         )
         self.size_grip.installEventFilter(self)
         resize_layout.addWidget(
@@ -104,6 +134,13 @@ class ChatOverlayWindow(QWidget):
             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
         )
         layout.addLayout(resize_layout)
+
+    def _toggle_always_on_top(self, checked: bool):
+        geometry = self.geometry()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, checked)
+        self.show()
+        self.setGeometry(geometry)
+        self.always_on_top = checked
 
     def eventFilter(self, watched, event):
         if not hasattr(self, "title_bar") or not hasattr(self, "size_grip"):

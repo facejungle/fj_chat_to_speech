@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self.is_chat_window_opened = False
         self.chat_window = None
         self.chat_window_geometry = None
+        self.chat_window_always_on_top = False
 
         # Connections
         self.youtube = None
@@ -1415,7 +1416,10 @@ class MainWindow(QMainWindow):
             return
 
         self.chat_window = ChatOverlayWindow(
-            self, self.chat_model, self.chat_text.font()
+            self,
+            self.chat_model,
+            self.chat_text.font(),
+            always_on_top=self.chat_window_always_on_top,
         )
         if self.chat_window_geometry is not None:
             self.chat_window.setGeometry(*self.chat_window_geometry)
@@ -1442,6 +1446,7 @@ class MainWindow(QMainWindow):
             geometry.width(),
             geometry.height(),
         )
+        self.chat_window_always_on_top = target_window.always_on_top
 
     def clear_log(self):
         self.chat_model.clear()
@@ -1915,6 +1920,7 @@ class MainWindow(QMainWindow):
             "yt_credentials": self.yt_credentials,
             "twitch_credentials": self.twitch_credentials,
             "chat_window_geometry": self.chat_window_geometry,
+            "chat_window_always_on_top": self.chat_window_always_on_top,
         }
         with open(get_settings_path(), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
@@ -1964,6 +1970,9 @@ class MainWindow(QMainWindow):
             self.yt_credentials = settings.get("yt_credentials", self.yt_credentials)
             self.twitch_credentials = settings.get(
                 "twitch_credentials", twitch_default_credentials
+            )
+            self.chat_window_always_on_top = settings.get(
+                "chat_window_always_on_top", self.chat_window_always_on_top
             )
             chat_window_geometry = settings.get("chat_window_geometry")
             if (

@@ -74,6 +74,7 @@ from app.constants import (
 )
 from app.utils import (
     clean_emoji,
+    clean_links,
     clean_message,
     clean_stop_words,
     clean_symbol_spam,
@@ -103,10 +104,10 @@ window_flag_fixed = (
     | Qt.WindowType.WindowCloseButtonHint
 )
 twitch_default_credentials = TwitchCredentialsTD(
-    client_id=None,
+    client_id="9exn5x3necqfaxfuqbglp3wra6ld0v",
     access=None,
     refresh=None,
-    nickname=None,
+    nickname="facejungle",
 )
 
 
@@ -138,7 +139,7 @@ class PlatformMessage(TypedDict):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_NAME + " (barmich2007)")
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
         self.setMinimumSize(1200, 600)
@@ -368,6 +369,7 @@ class MainWindow(QMainWindow):
         yt_layout.addWidget(self.yt_video_input)
         self.connect_yt_button = QPushButton(_(self.language, "Connect"))
         self.connect_yt_button.clicked.connect(self.on_click_yt_connect)
+        self.connect_yt_button.setCursor(Qt.CursorShape.PointingHandCursor)
         yt_layout.addWidget(self.connect_yt_button)
         # self.configure_yt_button = QPushButton(_(self.language, "Configure"))
         # self.configure_yt_button.clicked.connect(self.on_configure_yt)
@@ -383,12 +385,15 @@ class MainWindow(QMainWindow):
         self.twitch_input.setPlaceholderText(
             "https://www.twitch.tv/CHANNEL_NAME or CHANNEL_NAME"
         )
+        self.twitch_input.setText("barmich2007")
         twitch_layout.addWidget(self.twitch_input)
         self.connect_twitch_button = QPushButton(_(self.language, "Connect"))
         self.connect_twitch_button.clicked.connect(self.on_click_connect_twitch)
+        self.connect_twitch_button.setCursor(Qt.CursorShape.PointingHandCursor)
         twitch_layout.addWidget(self.connect_twitch_button)
         self.configure_twitch_button = QPushButton(_(self.language, "Configure"))
         self.configure_twitch_button.clicked.connect(self.on_configure_twitch)
+        self.configure_twitch_button.setCursor(Qt.CursorShape.PointingHandCursor)
         twitch_layout.addWidget(self.configure_twitch_button)
         connections_grid.addLayout(twitch_layout, 0, 1)
 
@@ -408,6 +413,7 @@ class MainWindow(QMainWindow):
         )
         self.read_filter_combo.setSelected(self.read_filter)
         self.read_filter_combo.changed.connect(self.on_change_read_filter)
+        self.read_filter_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.control_layout.addWidget(self.read_filter_combo)
 
     def setup_central_widget(self):
@@ -432,30 +438,36 @@ class MainWindow(QMainWindow):
         )
         self.setup_pause_button_color()
         self.pause_button.clicked.connect(self.on_pause_clicked)
+        self.pause_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.control_layout.addWidget(self.pause_button)
 
         self.clr_queue_button = QPushButton(_(self.language, "Clear queue"))
         self.clr_queue_button.clicked.connect(self.on_clear_queue)
+        self.clr_queue_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.control_layout.addWidget(self.clr_queue_button)
 
         self.auto_scroll_checkbox = QCheckBox(_(self.language, "Auto-scroll"))
         self.auto_scroll_checkbox.setChecked(self.auto_scroll)
         self.auto_scroll_checkbox.clicked.connect(self.toggle_auto_scroll)
+        self.auto_scroll_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
         chat_header_layout.addWidget(self.auto_scroll_checkbox)
 
         self.font_size_combo = QComboBox()
         self.font_size_combo.addItems([str(s) for s in range(8, 24, 2)])
         self.font_size_combo.setCurrentText(str(self.font_size))
         self.font_size_combo.currentIndexChanged.connect(self.font_size_changed)
+        self.font_size_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         chat_header_layout.addWidget(self.font_size_combo)
 
         self.chat_window_button = QPushButton()
         self.chat_window_button.clicked.connect(self.on_chat_window)
         self.update_chat_window_button_text()
+        self.chat_window_button.setCursor(Qt.CursorShape.PointingHandCursor)
         chat_header_layout.addWidget(self.chat_window_button)
 
         self.clear_log_button = QPushButton(_(self.language, "Clear log"))
         self.clear_log_button.clicked.connect(self.clear_log)
+        self.clear_log_button.setCursor(Qt.CursorShape.PointingHandCursor)
         chat_header_layout.addWidget(self.clear_log_button)
 
         self.chat_header_widget = QWidget()
@@ -890,9 +902,7 @@ class MainWindow(QMainWindow):
                 self._start_twitch_device_auth(self.twitch_credentials["client_id"])
                 return
 
-            self.twitch_input.setReadOnly(True)
-            self.connect_twitch_button.setEnabled(False)
-            self.connect_twitch_button.setText(_(self.language, "Connecting"))
+            self.on_reconnect_twitch()
 
             self.twitch = TwitchChatListener(
                 client_id=self.twitch_credentials["client_id"],
@@ -903,10 +913,18 @@ class MainWindow(QMainWindow):
                 on_disconnect=self.on_disconnect_twitch,
                 on_error=on_error,
                 on_message=on_msg,
+                on_reconnect=self.on_reconnect_twitch,
                 on_expiries_access=on_expiries_access,
                 lang=self.language,
             )
             self.twitch.run()
+
+    def on_reconnect_twitch(self):
+        self.connect_twitch_button.setPalette(self.style().standardPalette())
+        self.connect_twitch_button.setText(_(self.language, "Connecting"))
+
+        self.twitch_input.setReadOnly(True)
+        self.connect_twitch_button.setEnabled(False)
 
     def on_disconnect_twitch(self):
         self.twitch = None
@@ -1704,9 +1722,9 @@ class MainWindow(QMainWindow):
 
         for msg in messages:
 
-            text = clean_message(
-                msg.get("text", ""), lang=self.voice_language, ui_lang=self.language
-            )
+            cleaned_text = clean_links(msg.get("text", ""), lang=self.voice_language)
+            cleaned_text = clean_emoji(cleaned_text)
+            text = clean_message(cleaned_text, lang=self.voice_language)
 
             if not text or text in seen_texts:
                 continue
@@ -1745,11 +1763,11 @@ class MainWindow(QMainWindow):
 
                 for i, r in enumerate(rows, start=1):
 
-                    text = clean_message(
-                        r.get("comment_text", ""),
-                        lang=self.voice_language,
-                        ui_lang=self.language,
+                    cleaned_text = clean_links(
+                        r.get("comment_text", ""), lang=self.voice_language
                     )
+                    cleaned_text = clean_emoji(cleaned_text)
+                    text = clean_message(cleaned_text, lang=self.voice_language)
                     if not text:
                         continue
 
@@ -2232,7 +2250,8 @@ class MainWindow(QMainWindow):
         )
 
         cleaned_author = author.removeprefix("@")
-        cleaned_text = clean_emoji(message)
+        cleaned_text = clean_links(message, lang=self.voice_language)
+        cleaned_text = clean_emoji(cleaned_text)
 
         platform_author = f"{platform}:{cleaned_author}"
         if platform_author in self.banned_set:
@@ -2256,7 +2275,6 @@ class MainWindow(QMainWindow):
         cleaned_text = clean_message(
             cleaned_text,
             lang=self.voice_language,
-            ui_lang=self.language,
             convert_numbers=False,
             clean_spam=False,
         )
@@ -2322,7 +2340,6 @@ class MainWindow(QMainWindow):
         cleaned_author = clean_message(
             author,
             lang=self.voice_language,
-            ui_lang=self.language,
             convert_numbers=False,
             clean_spam=False,
         )

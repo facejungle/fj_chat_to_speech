@@ -423,10 +423,18 @@ def clean_emoji(text):
     return re.sub(r":[0-9A-Za-z_+-]{1,64}:", "", text).strip()
 
 
+def clean_links(text, lang: str = "en"):
+    link_text = _(lang, "Link")
+    _text = re.sub(r"https?://\S+", f" -{link_text}- ", text)
+    _text = re.sub(r"http?://\S+", f" -{link_text}- ", _text)
+    _text = re.sub(r"www\.\S+", f" -{link_text}- ", _text)
+    _text = re.sub(r"\S+\.\S+/\S+", f" -{link_text}- ", _text)
+    return _text
+
+
 def clean_message(
     text: str,
     lang: str,
-    ui_lang: str = "en",
     convert_numbers: bool = True,
     clean_spam: bool = True,
 ) -> str:
@@ -436,10 +444,6 @@ def clean_message(
 
     if not text:
         return ""
-
-    link_text = _(ui_lang, "Link")
-    text = re.sub(r"https?://\S+", f" -{link_text}- ", text)
-    text = re.sub(r"www\.\S+", f" -{link_text}- ", text)
 
     text = re.sub(r"\s+", " ", text)
     if convert_numbers:

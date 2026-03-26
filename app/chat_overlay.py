@@ -12,7 +12,8 @@ from PyQt6.QtGui import QFont, QIcon, QCloseEvent, QMouseEvent
 
 from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 
-from app.constants import APP_NAME, COLORS
+from app.constants import APP_NAME
+from app.constants_qt import COLORS
 from app.translations import _
 from app.utils import icon_path, resource_path
 

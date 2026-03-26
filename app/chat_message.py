@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import QStyledItemDelegate
 from PyQt6.QtCore import Qt, QAbstractListModel, QModelIndex, QSize
 from PyQt6.QtGui import QFont, QColor, QFontMetrics, QIcon, QPainter
 
-from app.constants import COLORS, PLATFORM_ICON
+from app.constants import PLATFORM_ICON
+from app.constants_qt import COLORS
 from app.utils import avatar_colors_from_name, resource_path
 
 

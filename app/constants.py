@@ -1,5 +1,9 @@
+import platform
+
+from PyQt6.QtGui import QColor
+
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 
 PADDING = 20
 VOICES = {
@@ -61,4 +65,23 @@ DEFAULTS = {
     "volume": 100,
     "speech_rate": "medium",
     "speech_delay": 1.5,
+}
+
+COLORS = {
+    "TRANSPARENT_BLACK_Q": QColor(0, 0, 0, 150),
+    "TRANSPARENT_BLACK": "rgba(0, 0, 0, 150)",
+    "TRANSPARENT_BLACK2_Q": QColor(0, 0, 0, 200),
+    "TRANSPARENT_BLACK2": "rgba(0, 0, 0, 200)",
+    "WHITE_Q": QColor("#ffffff"),
+    "WHITE": "#ffffff",
+    "GRAY_Q": QColor("#444444"),
+    "GRAY": "#444444",
+}
+
+PLATFORM_ICON = {
+    "system": "img\\system.svg" if platform.system() == "Windows" else "img/system.svg",
+    "twitch": "img\\twitch.svg" if platform.system() == "Windows" else "img/twitch.svg",
+    "youtube": (
+        "img\\youtube.svg" if platform.system() == "Windows" else "img/youtube.svg"
+    ),
 }

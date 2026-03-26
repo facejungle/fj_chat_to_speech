@@ -162,7 +162,7 @@ class TwitchChatListener:
             while reconnect_attempts < self.MAX_RETRIES and not self._is_stopping:
                 self.is_connected = False
                 is_socket_created = self._create_socket()
-                
+
                 while (
                     is_socket_created
                     and not self.is_connected

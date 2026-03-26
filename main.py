@@ -86,6 +86,7 @@ from app.utils import (
     detoxify_get_model_and_tokenizer_local_only,
     find_cached_detoxify_checkpoint,
     find_cached_silero_repo,
+    get_banned_list_path,
     get_detoxify,
     get_detoxify_impl,
     get_settings_path,
@@ -104,10 +105,10 @@ window_flag_fixed = (
     | Qt.WindowType.WindowCloseButtonHint
 )
 twitch_default_credentials = TwitchCredentialsTD(
-    client_id="9exn5x3necqfaxfuqbglp3wra6ld0v",
+    client_id=None,
     access=None,
     refresh=None,
-    nickname="facejungle",
+    nickname=None,
 )
 
 
@@ -139,7 +140,7 @@ class PlatformMessage(TypedDict):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_NAME + " (barmich2007)")
+        self.setWindowTitle(APP_NAME)
         icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
         self.setMinimumSize(1200, 600)
@@ -171,10 +172,12 @@ class MainWindow(QMainWindow):
         self.stop_words = tuple()
         self.chat_only_mode = False
         self.is_paused = False
-        self.is_chat_window_opened = False
-        self.chat_window = None
-        self.chat_window_geometry = None
-        self.chat_window_always_on_top = False
+
+        # Chat overlay
+        self.chat_overlay_show = False
+        self.chat_overlay = None
+        self.chat_overlay_geometry = None
+        self.chat_overlay_always_on_top = False
 
         # Connections
         self.youtube = None
@@ -232,44 +235,35 @@ class MainWindow(QMainWindow):
 
     # === UI setup ===
 
-    def setup_voice_menu(self):
-        self.voice_menu.clear()
-        for voice_lang in VOICES.keys():
-            voice_lang_menu = self.voice_menu.addMenu(voice_lang)
-
-            voices = ["random"] + list(VOICES[voice_lang])
-            for voice in voices:
-                voice_action = QAction(voice, self)
-                voice_action.setCheckable(True)
-                voice_action.setChecked(
-                    voice == self.voice and voice_lang == self.voice_language
-                )
-                voice_action.triggered.connect(
-                    lambda checked, l=voice_lang, v=voice: self.voice_changed(l, v)
-                )
-                voice_lang_menu.addAction(voice_action)
-
-        add_accents_action = QAction(_(self.language, "Add accents"), self)
-        add_accents_action.setCheckable(True)
-        add_accents_action.setChecked(self.add_accents)
-        add_accents_action.triggered.connect(self.toggle_add_accents)
-        self.voice_menu.addAction(add_accents_action)
-
-    def setup_language_menu(self):
-        self.language_menu.clear()
-        for lang in TRANSLATIONS.keys():
-            lang_action = QAction(lang, self)
-            lang_action.setCheckable(True)
-            lang_action.setChecked(lang == self.language)
-            lang_action.triggered.connect(
-                lambda checked, l=lang: self.language_changed(l)
-            )
-            self.language_menu.addAction(lang_action)
-
     def setup_menu_bar(self):
         menu_bar = QMenuBar(self)
         self.setMenuBar(menu_bar)
 
+        self.setup_file_menu(menu_bar)
+        self.setup_language_menu(menu_bar)
+        self.voice_menu = menu_bar.addMenu(_(self.language, "Speech configuration"))
+        self.setup_voice_menu()
+        self.setup_menu_message_settings(menu_bar)
+
+        chat_overlay_menu = menu_bar.addMenu(_(self.language, "Chat overlay"))
+
+        show_chat_overlay_action = QAction(
+            _(self.language, "Show chat"), chat_overlay_menu
+        )
+        show_chat_overlay_action.setCheckable(True)
+        show_chat_overlay_action.setChecked(self.chat_overlay_show)
+        show_chat_overlay_action.triggered.connect(self.toggle_show_chat_overlay)
+        show_chat_overlay_action.setShortcut(QKeySequence("F12"))
+        chat_overlay_menu.addAction(show_chat_overlay_action)
+        self.toggle_show_chat_overlay(self.chat_overlay_show)
+
+        reset_chat_overlay_action = QAction(
+            _(self.language, "Reset position"), chat_overlay_menu
+        )
+        reset_chat_overlay_action.triggered.connect(self.on_chat_overlay_reset)
+        chat_overlay_menu.addAction(reset_chat_overlay_action)
+
+    def setup_file_menu(self, menu_bar):
         file_menu = menu_bar.addMenu(_(self.language, "File"))
 
         export_log_action = QMenu(_(self.language, "Export log"), file_menu)
@@ -305,12 +299,42 @@ class MainWindow(QMainWindow):
         reset_settings_action.triggered.connect(self.on_reset_settings_action)
         file_menu.addAction(reset_settings_action)
 
-        self.language_menu = menu_bar.addMenu(_(self.language, "Language"))
-        self.setup_language_menu()
+    def setup_language_menu(self, menu_bar):
+        language_menu = menu_bar.addMenu(_(self.language, "Language"))
+        language_menu.clear()
+        for lang in TRANSLATIONS.keys():
+            lang_action = QAction(lang, self)
+            lang_action.setCheckable(True)
+            lang_action.setChecked(lang == self.language)
+            lang_action.triggered.connect(
+                lambda checked, l=lang: self.language_changed(l)
+            )
+            language_menu.addAction(lang_action)
 
-        self.voice_menu = menu_bar.addMenu(_(self.language, "Speech configuration"))
-        self.setup_voice_menu()
+    def setup_voice_menu(self):
+        self.voice_menu.clear()
+        for voice_lang in VOICES.keys():
+            voice_lang_menu = self.voice_menu.addMenu(voice_lang)
 
+            voices = ["random"] + list(VOICES[voice_lang])
+            for voice in voices:
+                voice_action = QAction(voice, self)
+                voice_action.setCheckable(True)
+                voice_action.setChecked(
+                    voice == self.voice and voice_lang == self.voice_language
+                )
+                voice_action.triggered.connect(
+                    lambda checked, l=voice_lang, v=voice: self.voice_changed(l, v)
+                )
+                voice_lang_menu.addAction(voice_action)
+
+        add_accents_action = QAction(_(self.language, "Add accents"), self)
+        add_accents_action.setCheckable(True)
+        add_accents_action.setChecked(self.add_accents)
+        add_accents_action.triggered.connect(self.toggle_add_accents)
+        self.voice_menu.addAction(add_accents_action)
+
+    def setup_menu_message_settings(self, menu_bar: QMenu):
         msg_settings_menu = menu_bar.addMenu(_(self.language, "Message Settings"))
 
         banned_action = QAction(_(self.language, "List of banned"), msg_settings_menu)
@@ -326,6 +350,8 @@ class MainWindow(QMainWindow):
         )
         delays_action.triggered.connect(self.on_delays_settings_action)
         msg_settings_menu.addAction(delays_action)
+
+        msg_settings_menu.addSeparator()
 
         read_authors_action = QAction(
             _(self.language, "Read author names"), msg_settings_menu
@@ -369,6 +395,7 @@ class MainWindow(QMainWindow):
         yt_layout.addWidget(self.yt_video_input)
         self.connect_yt_button = QPushButton(_(self.language, "Connect"))
         self.connect_yt_button.clicked.connect(self.on_click_yt_connect)
+        self.connect_yt_button.setFixedWidth(150)
         self.connect_yt_button.setCursor(Qt.CursorShape.PointingHandCursor)
         yt_layout.addWidget(self.connect_yt_button)
         # self.configure_yt_button = QPushButton(_(self.language, "Configure"))
@@ -385,10 +412,10 @@ class MainWindow(QMainWindow):
         self.twitch_input.setPlaceholderText(
             "https://www.twitch.tv/CHANNEL_NAME or CHANNEL_NAME"
         )
-        self.twitch_input.setText("barmich2007")
         twitch_layout.addWidget(self.twitch_input)
         self.connect_twitch_button = QPushButton(_(self.language, "Connect"))
         self.connect_twitch_button.clicked.connect(self.on_click_connect_twitch)
+        self.connect_twitch_button.setFixedWidth(150)
         self.connect_twitch_button.setCursor(Qt.CursorShape.PointingHandCursor)
         twitch_layout.addWidget(self.connect_twitch_button)
         self.configure_twitch_button = QPushButton(_(self.language, "Configure"))
@@ -419,26 +446,21 @@ class MainWindow(QMainWindow):
     def setup_central_widget(self):
         chat_header_layout = QHBoxLayout()
         chat_header_layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
-        # self.chat_header_label = QLabel(_(self.language, "Message Log"))
-        # self.chat_header_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        # chat_header_layout.addWidget(self.chat_header_label, 1)
 
         self.control_layout = QHBoxLayout()
-        chat_header_layout.addLayout(self.control_layout, 1)
+        chat_header_layout.addLayout(self.control_layout)
         self.control_layout.setContentsMargins(0, 0, PADDING, 0)
         self.audio_indicator = QLabel("🟢")
         self.control_layout.addWidget(self.audio_indicator)
 
         self.setup_read_filter()
 
-        self.pause_button = QPushButton(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.pause_button = QPushButton()
         self.setup_pause_button_color()
         self.pause_button.clicked.connect(self.on_pause_clicked)
+        self.pause_button.setFixedWidth(250)
         self.pause_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_pause_button_text()
         self.control_layout.addWidget(self.pause_button)
 
         self.clr_queue_button = QPushButton(_(self.language, "Clear queue"))
@@ -450,7 +472,14 @@ class MainWindow(QMainWindow):
         self.auto_scroll_checkbox.setChecked(self.auto_scroll)
         self.auto_scroll_checkbox.clicked.connect(self.toggle_auto_scroll)
         self.auto_scroll_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-        chat_header_layout.addWidget(self.auto_scroll_checkbox)
+        chat_header_layout.addWidget(
+            self.auto_scroll_checkbox, 1, Qt.AlignmentFlag.AlignRight
+        )
+
+        self.clear_log_button = QPushButton(_(self.language, "Clear log"))
+        self.clear_log_button.clicked.connect(self.clear_log)
+        self.clear_log_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        chat_header_layout.addWidget(self.clear_log_button)
 
         self.font_size_combo = QComboBox()
         self.font_size_combo.addItems([str(s) for s in range(8, 24, 2)])
@@ -458,17 +487,6 @@ class MainWindow(QMainWindow):
         self.font_size_combo.currentIndexChanged.connect(self.font_size_changed)
         self.font_size_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         chat_header_layout.addWidget(self.font_size_combo)
-
-        self.chat_window_button = QPushButton()
-        self.chat_window_button.clicked.connect(self.on_chat_window)
-        self.update_chat_window_button_text()
-        self.chat_window_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        chat_header_layout.addWidget(self.chat_window_button)
-
-        self.clear_log_button = QPushButton(_(self.language, "Clear log"))
-        self.clear_log_button.clicked.connect(self.clear_log)
-        self.clear_log_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        chat_header_layout.addWidget(self.clear_log_button)
 
         self.chat_header_widget = QWidget()
         self.chat_header_widget.setLayout(chat_header_layout)
@@ -486,7 +504,7 @@ class MainWindow(QMainWindow):
         self.chat_text.setSpacing(4)
         self.chat_model = ChatMessageListModel(self.chat_text)
         self.chat_text.setModel(self.chat_model)
-        self.chat_text.setItemDelegate(ChatMessageDelegate(self.chat_text))
+        # self.chat_text.setItemDelegate(ChatMessageDelegate(self.chat_text, only_system_msg=True, with_avatar=False))
         self.root_layout.addWidget(self.chat_text)
 
         # Timer to flush messages added from background threads
@@ -597,11 +615,7 @@ class MainWindow(QMainWindow):
 
     def on_pause_clicked(self):
         self.is_paused = not self.is_paused
-        self.pause_button.setText(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.update_pause_button_text()
         self.setup_pause_button_color()
         if self.is_paused:
             self.statusBar().showMessage(
@@ -618,6 +632,9 @@ class MainWindow(QMainWindow):
         self.setup_menu_bar()
         self.apply_chat_only_mode()
         self.on_change_stats()
+
+        if hasattr(self, "chat_overlay") and self.chat_overlay:
+            self.chat_overlay.language_changed(lang)
 
         read_filter_selected = self.read_filter_combo.getSelectedIndex()
         read_filter_items = [_(self.language, i) for i in DEFAULTS["read_filter"]]
@@ -639,18 +656,14 @@ class MainWindow(QMainWindow):
         )
         self.configure_twitch_button.setText(_(self.language, "Configure"))
 
-        # self.chat_header_label.setText(_(self.language, "Message Log"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
-        self.update_chat_window_button_text()
-        self.pause_button.setText(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.update_pause_button_text()
         self.clr_queue_button.setText((_(self.language, "Clear queue")))
 
     def voice_changed(self, lang, voice):
+        if self.model_lock.locked():
+            return
         self.voice = voice
         if self.voice_language != lang:
             self.voice_language = lang
@@ -681,9 +694,9 @@ class MainWindow(QMainWindow):
         font.setPointSize(self.font_size)
         self.chat_text.setFont(font)
         self.chat_text.doItemsLayout()
-        if self.chat_window is not None:
-            self.chat_window.chat_view.setFont(font)
-            self.chat_window.chat_view.doItemsLayout()
+        if self.chat_overlay is not None:
+            self.chat_overlay.chat_view.setFont(font)
+            self.chat_overlay.chat_view.doItemsLayout()
 
     def on_configure_twitch(self):
         if getattr(self, "dlg", False) and self.dlg:
@@ -873,7 +886,7 @@ class MainWindow(QMainWindow):
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
-                        platform="Twitch",
+                        platform="twitch",
                         author=author,
                         message=msg,
                         is_sponsor=is_sponsor,
@@ -1030,7 +1043,7 @@ class MainWindow(QMainWindow):
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
-                        platform="YouTube",
+                        platform="youtube",
                         author=author,
                         message=msg,
                         is_sponsor=is_sponsor,
@@ -1409,7 +1422,12 @@ class MainWindow(QMainWindow):
         self.statusBar().setVisible(not chat_only)
 
         self.chat_text.setItemDelegate(
-            ChatMessageDelegate(self.chat_text, hide_system_msg=chat_only)
+            ChatMessageDelegate(
+                self.chat_text,
+                only_system_msg=not chat_only,
+                hide_system_msg=chat_only,
+                with_avatar=False,
+            )
         )
 
         if hasattr(self, "connections_widget"):
@@ -1417,54 +1435,59 @@ class MainWindow(QMainWindow):
         if hasattr(self, "chat_header_widget"):
             self.chat_header_widget.setVisible(not chat_only)
 
-    def update_chat_window_button_text(self):
-        self.chat_window_button.setText(
-            _(self.language, "Close chat window")
-            if self.is_chat_window_opened
-            else _(self.language, "Chat window")
+    def update_pause_button_text(self):
+        self.pause_button.setText(
+            _(self.language, "Stopped")
+            if self.is_paused
+            else _(self.language, "Playback...")
         )
 
     def toggle_auto_scroll(self, checked):
         self.auto_scroll = checked
 
-    def on_chat_window(self):
-        if self.is_chat_window_opened:
-            if self.chat_window is not None:
-                self.chat_window.close()
-            return
+    def toggle_show_chat_overlay(self, checked):
+        self.chat_overlay_show = checked
+        self.on_show_chat_overlay()
 
-        self.chat_window = ChatOverlayWindow(
-            self,
-            self.chat_model,
-            self.chat_text.font(),
-            always_on_top=self.chat_window_always_on_top,
-        )
-        if self.chat_window_geometry is not None:
-            self.chat_window.setGeometry(*self.chat_window_geometry)
+    def on_show_chat_overlay(self):
+        if self.chat_overlay_show is False:
+            if self.chat_overlay is not None:
+                self.chat_overlay.close()
+                self.chat_overlay = None
+            return
         else:
-            self.chat_window.move(self.x() + 40, self.y() + 40)
-        self.chat_window.show()
-        self.is_chat_window_opened = True
-        self.update_chat_window_button_text()
+            self.chat_overlay = ChatOverlayWindow(
+                self,
+                self.chat_model,
+                self.chat_text.font(),
+                lang=self.language,
+                always_on_top=self.chat_overlay_always_on_top,
+            )
+            if self.chat_overlay_geometry is not None:
+                self.chat_overlay.setGeometry(*self.chat_overlay_geometry)
+            else:
+                self.on_chat_overlay_reset()
+
+            self.chat_overlay.show()
+
+    def on_chat_overlay_reset(self):
+        if hasattr(self, "chat_overlay") and self.chat_overlay:
+            self.chat_overlay.setGeometry(self.x(), self.y(), 400, 600)
 
     def on_chat_overlay_closed(self):
-        self.chat_window = None
-        self.is_chat_window_opened = False
-        self.update_chat_window_button_text()
-
-    def save_chat_overlay_geometry(self, window=None):
-        target_window = window or self.chat_window
-        if target_window is None:
+        if self.chat_overlay is None:
             return
 
-        geometry = target_window.geometry()
-        self.chat_window_geometry = (
+        geometry = self.chat_overlay.geometry()
+        self.chat_overlay_geometry = (
             geometry.x(),
             geometry.y(),
             geometry.width(),
             geometry.height(),
         )
-        self.chat_window_always_on_top = target_window.always_on_top
+        self.chat_overlay_always_on_top = self.chat_overlay.always_on_top
+
+        self.chat_overlay = None
 
     def clear_log(self):
         self.chat_model.clear()
@@ -1549,12 +1572,7 @@ class MainWindow(QMainWindow):
         self.configure_twitch_button.setText(_(self.language, "Configure"))
         self.auto_scroll_checkbox.setText(_(self.language, "Auto-scroll"))
         self.clear_log_button.setText(_(self.language, "Clear log"))
-        self.update_chat_window_button_text()
-        self.pause_button.setText(
-            _(self.language, "Stopped")
-            if self.is_paused
-            else _(self.language, "Playback...")
-        )
+        self.update_pause_button_text()
         self.clr_queue_button.setText(_(self.language, "Clear queue"))
         self.on_change_stats()
 
@@ -1815,18 +1833,9 @@ class MainWindow(QMainWindow):
     def status_voice_text(self):
         return f"{_(self.language, 'Voice')}: {_(self.language, self.voice_language)} - {self.voice}"
 
-    def colored_text(self, text, color=None, background=None):
-        style = ""
-        if color:
-            style += f"color: {color};"
-        if background:
-            style += f"background-color: {background};"
-        safe_text = html.escape(str(text)).replace("\n", "<br>")
-        return f'<span style="{style}">{safe_text}</span>'
-
     def add_sys_message(self, author, text, status="default"):
         status_colors = {
-            "default": None,
+            "default": "#444444",
             "warning": "orange",
             "error": "darkRed",
             "success": "darkGreen",
@@ -1904,8 +1913,8 @@ class MainWindow(QMainWindow):
 
             if self.auto_scroll:
                 self.chat_text.scrollToBottom()
-                if self.chat_window is not None:
-                    self.chat_window.chat_view.scrollToBottom()
+                if self.chat_overlay is not None:
+                    self.chat_overlay.chat_view.scrollToBottom()
             else:
                 scrollbar.setValue(prev_scroll_value)
         except Exception:
@@ -1913,9 +1922,6 @@ class MainWindow(QMainWindow):
             pass
 
     def save_settings(self):
-        if self.chat_window is not None:
-            self.save_chat_overlay_geometry()
-
         settings = {
             "language": self.language,
             "voice_language": self.voice_language,
@@ -1937,8 +1943,8 @@ class MainWindow(QMainWindow):
             "buffer_maxsize": self.buffer_maxsize,
             "yt_credentials": self.yt_credentials,
             "twitch_credentials": self.twitch_credentials,
-            "chat_window_geometry": self.chat_window_geometry,
-            "chat_window_always_on_top": self.chat_window_always_on_top,
+            "chat_window_geometry": self.chat_overlay_geometry,
+            "chat_window_always_on_top": self.chat_overlay_always_on_top,
         }
         with open(get_settings_path(), "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
@@ -1989,16 +1995,14 @@ class MainWindow(QMainWindow):
             self.twitch_credentials = settings.get(
                 "twitch_credentials", twitch_default_credentials
             )
-            self.chat_window_always_on_top = settings.get(
-                "chat_window_always_on_top", self.chat_window_always_on_top
+            self.chat_overlay_always_on_top = settings.get(
+                "chat_window_always_on_top", self.chat_overlay_always_on_top
             )
-            chat_window_geometry = settings.get("chat_window_geometry")
-            if (
-                isinstance(chat_window_geometry, list)
-                and len(chat_window_geometry) == 4
-                and all(isinstance(value, int) for value in chat_window_geometry)
-            ):
-                self.chat_window_geometry = tuple(chat_window_geometry)
+
+            self.chat_overlay_geometry = settings.get(
+                "chat_window_geometry", self.chat_overlay_geometry
+            )
+
             if not isinstance(self.twitch_credentials, dict):
                 self.twitch_credentials = twitch_default_credentials
 
@@ -2010,16 +2014,15 @@ class MainWindow(QMainWindow):
 
     def save_banned_list(self):
         with open(
-            resource_path("spam_filter/banned.txt"),
+            get_banned_list_path(),
             "w",
             encoding="utf-8",
         ) as f:
             f.write("\n".join(self.banned_set) + "\n")
 
     def load_banned_list(self):
-        source_path = resource_path("spam_filter/banned.txt")
         try:
-            with open(source_path, "r", encoding="utf-8") as file:
+            with open(get_banned_list_path(), "r", encoding="utf-8") as file:
                 return set(line.strip() for line in file if line.strip())
         except FileNotFoundError:
             pass
@@ -2028,8 +2031,8 @@ class MainWindow(QMainWindow):
         return set()
 
     def closeEvent(self, event):
-        if self.chat_window is not None:
-            self.chat_window.close()
+        if self.chat_overlay is not None:
+            self.chat_overlay.close()
         self.save_settings()
         sd.stop()
         super().closeEvent(event)
@@ -2110,6 +2113,7 @@ class MainWindow(QMainWindow):
                 )
 
     def init_silero(self, voice_language):
+        self.voice_menu.setDisabled(True)
         attempt = 0
         error_text = None
         hub = get_torch_hub()
@@ -2192,6 +2196,7 @@ class MainWindow(QMainWindow):
                     text=f"{_(self.language, 'silero_failed')}. {translate_text(error_text, self.language) if error_text else ""}",
                     status="error",
                 )
+        self.voice_menu.setDisabled(False)
 
     def get_msg_hash(self, platform, author, message):
         return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()

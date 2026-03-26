@@ -131,6 +131,7 @@ class PlatformMessage(TypedDict):
     platform: str
     author: str
     message: str
+    connection_token: int
     is_sponsor: bool
     is_staff: bool
     is_owner: bool
@@ -195,11 +196,17 @@ class MainWindow(QMainWindow):
         self._pending_messages = deque()
         self._pending_ui_updates = deque()
         self._pending_status_messages = deque()
+        self._pending_ui_calls = deque()
         self._pending_stats_update = False
         self.toxic_dict = defaultdict(float)
         self.banned_set = set()
         self.processed_messages = set()
+        self.message_state_lock = threading.Lock()
+        self.stats_lock = threading.Lock()
+        self.message_workers = min(4, max(2, os.cpu_count() or 2))
         self._cache_clear_in_progress = False
+        self._connection_token_seq = 0
+        self._active_connection_tokens = {"youtube": None, "twitch": None}
 
         self.load_settings()
 
@@ -218,7 +225,12 @@ class MainWindow(QMainWindow):
 
     def start_background_services(self):
         threading.Thread(target=self.process_audio_loop, daemon=True).start()
-        threading.Thread(target=self.process_messages_loop, daemon=True).start()
+        for worker_idx in range(self.message_workers):
+            threading.Thread(
+                target=self.process_messages_loop,
+                daemon=False,
+                name=f"process_messages_loop_{worker_idx}",
+            ).start()
         threading.Thread(
             target=lambda: self.init_silero(self.voice_language), daemon=True
         ).start()
@@ -846,6 +858,7 @@ class MainWindow(QMainWindow):
     def on_click_connect_twitch(self):
         if self.twitch:
             self.twitch.disconnect()
+            self.on_disconnect_twitch(self.twitch)
             self.twitch = None
         else:
             video_id = self.twitch_input.text()
@@ -861,6 +874,8 @@ class MainWindow(QMainWindow):
             if not client_id or client_id.lower() == "none":
                 self.on_configure_twitch()
                 return
+
+            connection_token = self._open_connection_token("twitch")
 
             def on_expiries_access():
                 access, refresh = AuthWorker.ensure_valid_access_token(
@@ -883,12 +898,15 @@ class MainWindow(QMainWindow):
                 is_owner=False,
                 is_donate=False,
             ):
+                if not self._is_active_connection_token("twitch", connection_token):
+                    return
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
                         platform="twitch",
                         author=author,
                         message=msg,
+                        connection_token=connection_token,
                         is_sponsor=is_sponsor,
                         is_staff=is_staff,
                         is_owner=is_owner,
@@ -917,29 +935,41 @@ class MainWindow(QMainWindow):
 
             self.on_reconnect_twitch()
 
-            self.twitch = TwitchChatListener(
+            listener = TwitchChatListener(
                 client_id=self.twitch_credentials["client_id"],
                 token=self.twitch_credentials["access"],
                 nickname=self.twitch_credentials["nickname"],
                 channel=video_id,
-                on_connect=self.on_connect_twitch,
-                on_disconnect=self.on_disconnect_twitch,
+                on_connect=lambda: self.on_connect_twitch(listener),
+                on_disconnect=lambda: self.on_disconnect_twitch(listener),
                 on_error=on_error,
                 on_message=on_msg,
-                on_reconnect=self.on_reconnect_twitch,
+                on_reconnect=lambda: self.on_reconnect_twitch(listener),
                 on_expiries_access=on_expiries_access,
                 lang=self.language,
             )
+            self.twitch = listener
             self.twitch.run()
 
-    def on_reconnect_twitch(self):
+    def on_reconnect_twitch(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_reconnect_twitch, listener)
+            return
+        if listener is not None and listener is not self.twitch:
+            return
         self.connect_twitch_button.setPalette(self.style().standardPalette())
         self.connect_twitch_button.setText(_(self.language, "Connecting"))
 
         self.twitch_input.setReadOnly(True)
         self.connect_twitch_button.setEnabled(False)
 
-    def on_disconnect_twitch(self):
+    def on_disconnect_twitch(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_disconnect_twitch, listener)
+            return
+        if listener is not None and listener is not self.twitch:
+            return
+        self._close_connection_token("twitch")
         self.twitch = None
         self.twitch_is_connected = False
         self.twitch_input.setReadOnly(False)
@@ -953,7 +983,12 @@ class MainWindow(QMainWindow):
             status="success",
         )
 
-    def on_connect_twitch(self):
+    def on_connect_twitch(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_connect_twitch, listener)
+            return
+        if listener is not None and listener is not self.twitch:
+            return
         self.twitch_is_connected = True
         self.connect_twitch_button.setEnabled(True)
 
@@ -1011,6 +1046,7 @@ class MainWindow(QMainWindow):
     def on_click_yt_connect(self):
         if self.youtube:
             self.youtube.disconnect()
+            self.on_disconnect_yt(self.youtube)
             self.youtube = None
         else:
             video_id = self.yt_video_input.text()
@@ -1031,6 +1067,8 @@ class MainWindow(QMainWindow):
                 if res != QMessageBox.StandardButton.Yes:
                     return
 
+            connection_token = self._open_connection_token("youtube")
+
             def on_msg(
                 msg_id,
                 author,
@@ -1040,12 +1078,15 @@ class MainWindow(QMainWindow):
                 is_owner=False,
                 is_donate=False,
             ):
+                if not self._is_active_connection_token("youtube", connection_token):
+                    return
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
                         platform="youtube",
                         author=author,
                         message=msg,
+                        connection_token=connection_token,
                         is_sponsor=is_sponsor,
                         is_staff=is_staff,
                         is_owner=is_owner,
@@ -1058,19 +1099,25 @@ class MainWindow(QMainWindow):
 
             self.on_reconnect_yt()
 
-            self.youtube = YouTubeChatParser(
+            listener = YouTubeChatParser(
                 url=video_id,
-                on_connect=self.on_connect_yt,
-                on_disconnect=self.on_disconnect_yt,
+                on_connect=lambda: self.on_connect_yt(listener),
+                on_disconnect=lambda: self.on_disconnect_yt(listener),
                 on_message=on_msg,
                 on_error=on_error,
-                on_reconnect=self.on_reconnect_yt,
+                on_reconnect=lambda: self.on_reconnect_yt(listener),
                 lang=self.language,
             )
+            self.youtube = listener
 
             self.youtube.run()
 
-    def on_connect_yt(self):
+    def on_connect_yt(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_connect_yt, listener)
+            return
+        if listener is not None and listener is not self.youtube:
+            return
         self.yt_is_connected = True
         self.connect_yt_button.setEnabled(True)
 
@@ -1083,7 +1130,13 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
         self.connect_yt_button.setPalette(palette)
 
-    def on_disconnect_yt(self):
+    def on_disconnect_yt(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_disconnect_yt, listener)
+            return
+        if listener is not None and listener is not self.youtube:
+            return
+        self._close_connection_token("youtube")
         self.youtube = None
         self.yt_is_connected = False
         self.yt_video_input.setReadOnly(False)
@@ -1097,7 +1150,12 @@ class MainWindow(QMainWindow):
         self.connect_yt_button.setText(_(self.language, "Connect"))
         self.connect_yt_button.setPalette(self.style().standardPalette())
 
-    def on_reconnect_yt(self):
+    def on_reconnect_yt(self, listener=None):
+        if threading.current_thread() is not threading.main_thread():
+            self._run_on_ui_thread(self.on_reconnect_yt, listener)
+            return
+        if listener is not None and listener is not self.youtube:
+            return
         self.connect_yt_button.setPalette(self.style().standardPalette())
         self.connect_yt_button.setText(_(self.language, "Connecting"))
 
@@ -1849,7 +1907,8 @@ class MainWindow(QMainWindow):
         )
 
     def add_message(self, platform, author, text, color=None, background=None):
-        self.messages_stats["messages_count"] += 1
+        with self.stats_lock:
+            self.messages_stats["messages_count"] += 1
         self.on_change_stats()
 
         # If called from a non-main thread, enqueue for the GUI flush timer
@@ -1861,6 +1920,9 @@ class MainWindow(QMainWindow):
         self._insert_message(platform, author, text, color, background)
 
     def _flush_pending_messages(self):
+        while len(self._pending_ui_calls) > 0:
+            callback, args, kwargs = self._pending_ui_calls.popleft()
+            callback(*args, **kwargs)
         while len(self._pending_messages) > 0:
             platform, author, text, color, background = self._pending_messages.popleft()
             self._insert_message(platform, author, text, color, background)
@@ -2013,12 +2075,14 @@ class MainWindow(QMainWindow):
             pass  # No settings file, use defaults
 
     def save_banned_list(self):
+        with self.message_state_lock:
+            banned_items = sorted(self.banned_set)
         with open(
             get_banned_list_path(),
             "w",
             encoding="utf-8",
         ) as f:
-            f.write("\n".join(self.banned_set) + "\n")
+            f.write("\n".join(banned_items) + "\n")
 
     def load_banned_list(self):
         try:
@@ -2113,7 +2177,7 @@ class MainWindow(QMainWindow):
                 )
 
     def init_silero(self, voice_language):
-        self.voice_menu.setDisabled(True)
+        self._run_on_ui_thread(self.voice_menu.setDisabled, True)
         attempt = 0
         error_text = None
         hub = get_torch_hub()
@@ -2196,7 +2260,7 @@ class MainWindow(QMainWindow):
                     text=f"{_(self.language, 'silero_failed')}. {translate_text(error_text, self.language) if error_text else ""}",
                     status="error",
                 )
-        self.voice_menu.setDisabled(False)
+        self._run_on_ui_thread(self.voice_menu.setDisabled, False)
 
     def get_msg_hash(self, platform, author, message):
         return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()
@@ -2218,18 +2282,23 @@ class MainWindow(QMainWindow):
             text=f"[{_(self.language, reason)} {severity:.2f}] {message}",
             color="gray",
         )
-        self.messages_stats["filtered_count"] += 1
+        should_save_banned_list = False
+        with self.stats_lock:
+            self.messages_stats["filtered_count"] += 1
         self.on_change_stats()
 
         if is_staff is False and is_owner is False:
-            self.toxic_dict[platform_author] += severity
-            if self.toxic_dict[platform_author] > self.ban_limit:
+            with self.message_state_lock:
+                self.toxic_dict[platform_author] += severity
+                if self.toxic_dict[platform_author] > self.ban_limit:
+                    self.banned_set.add(platform_author)
+                    should_save_banned_list = True
+            if should_save_banned_list:
                 self.add_sys_message(
                     author=platform,
                     text=f"[{_(self.language, 'Banned')}] {author}",
                     status="warning",
                 )
-                self.banned_set.add(platform_author)
                 self.save_banned_list()
 
     def calc_toxicity(self, text):
@@ -2259,7 +2328,14 @@ class MainWindow(QMainWindow):
         cleaned_text = clean_emoji(cleaned_text)
 
         platform_author = f"{platform}:{cleaned_author}"
-        if platform_author in self.banned_set:
+        msg_id = str(msg_id)
+        with self.message_state_lock:
+            is_banned = platform_author in self.banned_set
+            is_processed = msg_id in self.processed_messages
+            if not is_processed:
+                self.processed_messages.add(msg_id)
+
+        if is_banned:
             self.add_message(
                 platform=platform,
                 author=cleaned_author,
@@ -2267,12 +2343,8 @@ class MainWindow(QMainWindow):
                 color="gray",
             )
             return
-
-        msg_id = str(msg_id)
-        if msg_id in self.processed_messages:
+        if is_processed:
             return
-
-        self.processed_messages.add(msg_id)
 
         if self.auto_translate:
             cleaned_text = translate_text(cleaned_text, self.voice_language)
@@ -2315,7 +2387,7 @@ class MainWindow(QMainWindow):
         if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
             return
 
-        read_filter = self.read_filter_combo.getSelected()
+        read_filter = self.read_filter
         if is_staff and _(self.language, "Moderator") not in read_filter:
             return
         elif is_owner and _(self.language, "Author") not in read_filter:
@@ -2381,7 +2453,7 @@ class MainWindow(QMainWindow):
             cleaned_author = transliteration(cleaned_author, self.voice_language)
             cleaned_text = f"""
 <speak>
-    <s>{_(self.voice_language, "Message on")} <prosody pitch="x-high">{_(self.voice_language, str(platform).lower())}</prosody> {_(self.voice_language, "from")} <prosody pitch="x-high">{cleaned_author}</prosody></s>:
+    <s>{_(self.voice_language, 'Message on')} <prosody pitch="x-high">{_(self.voice_language, str(platform).lower())}</prosody> {_(self.voice_language, 'from')} <prosody pitch="x-high">{cleaned_author}</prosody></s>:
     <prosody rate="{self.speech_rate}" pitch="medium">{text}</prosody>
 </speak>
             """
@@ -2575,7 +2647,8 @@ class MainWindow(QMainWindow):
                 del audio_data
                 gc.collect()
 
-                self.messages_stats["spoken_count"] += 1
+                with self.stats_lock:
+                    self.messages_stats["spoken_count"] += 1
                 self.on_change_stats()
 
             except Exception as e:
@@ -2599,6 +2672,11 @@ class MainWindow(QMainWindow):
                 except Empty:
                     continue
 
+                if not self._is_active_connection_token(
+                    msg_data["platform"], msg_data["connection_token"]
+                ):
+                    continue
+
                 self.process_chat_message(
                     msg_id=msg_data["msg_id"],
                     platform=msg_data["platform"],
@@ -2618,6 +2696,24 @@ class MainWindow(QMainWindow):
                 )
 
             sleep(0.1)
+
+    def _open_connection_token(self, platform: str) -> int:
+        self._connection_token_seq += 1
+        token = self._connection_token_seq
+        self._active_connection_tokens[platform] = token
+        return token
+
+    def _close_connection_token(self, platform: str):
+        self._active_connection_tokens[platform] = None
+
+    def _is_active_connection_token(self, platform: str, token: int) -> bool:
+        return self._active_connection_tokens.get(platform) == token
+
+    def _run_on_ui_thread(self, callback, *args, **kwargs):
+        if threading.current_thread() is threading.main_thread():
+            callback(*args, **kwargs)
+            return
+        self._pending_ui_calls.append((callback, args, kwargs))
 
 
 def main():

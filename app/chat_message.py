@@ -1,11 +1,11 @@
-from functools import lru_cache
 from typing import TypedDict
 
 from PyQt6.QtWidgets import QStyledItemDelegate
 from PyQt6.QtCore import Qt, QAbstractListModel, QModelIndex, QSize
-from PyQt6.QtGui import QFont, QColor, QFontMetrics
+from PyQt6.QtGui import QFont, QColor, QFontMetrics, QIcon, QPainter
 
-from app.utils import avatar_colors_from_name
+from app.constants import COLORS, PLATFORM_ICON
+from app.utils import avatar_colors_from_name, resource_path
 
 
 class ChatMessage(TypedDict):
@@ -70,8 +70,19 @@ class ChatMessageDelegate(QStyledItemDelegate):
     BUBBLE_PADDING = 10
     HEADER_SPACING = 4
 
-    def __init__(self, parent=..., hide_system_msg: bool = False):
+    def __init__(
+        self,
+        parent=...,
+        only_system_msg: bool = False,
+        hide_system_msg: bool = False,
+        with_avatar: bool = True,
+    ):
+        self.only_system_msg = only_system_msg
         self.hide_system_msg = hide_system_msg
+        self.with_avatar = with_avatar
+        self.avatar_size = self.AVATAR_SIZE if with_avatar else 0
+        self.spacing = self.SPACING if with_avatar else 0
+
         super().__init__(parent)
         self._sync_hidden_rows()
 
@@ -85,10 +96,20 @@ class ChatMessageDelegate(QStyledItemDelegate):
                 model.layoutChanged.connect(self._sync_hidden_rows)
                 model.dataChanged.connect(self._sync_hidden_rows)
 
-    def _is_hidden_system_message(self, message: ChatMessage | None) -> bool:
-        return bool(
-            message and self.hide_system_msg and message["platform"] == "system"
-        )
+    def _is_hidden_message(self, message: ChatMessage | None) -> bool:
+        if not message:
+            return False
+
+        if self.hide_system_msg and message["platform"] == "system":
+            return True
+
+        if self.only_system_msg:
+            if message["platform"] == "system":
+                return False
+
+            return True
+
+        return False
 
     def _sync_hidden_rows(self, *_args):
         view = self.parent()
@@ -106,7 +127,7 @@ class ChatMessageDelegate(QStyledItemDelegate):
         for row in range(model.rowCount()):
             index = model.index(row, 0)
             message = index.data(ChatMessageListModel.MessageRole)
-            view.setRowHidden(row, self._is_hidden_system_message(message))
+            view.setRowHidden(row, self._is_hidden_message(message))
 
     def _bubble_width(self, option):
         width = option.rect.width()
@@ -116,7 +137,7 @@ class ChatMessageDelegate(QStyledItemDelegate):
         if width <= 0:
             width = 900
         content_width = max(260, width - (2 * self.OUTER_MARGIN))
-        return max(140, content_width - self.AVATAR_SIZE - self.SPACING)
+        return max(140, content_width - self.avatar_size - self.spacing)
 
     def _measure(self, option, message: ChatMessage):
         bubble_width = self._bubble_width(option)
@@ -147,26 +168,26 @@ class ChatMessageDelegate(QStyledItemDelegate):
             + body_height
             + self.BUBBLE_PADDING
         )
-        item_height = max(self.AVATAR_SIZE, bubble_height)
+        item_height = max(self.avatar_size, bubble_height)
         return bubble_width, bubble_height, item_height, header_height
 
     def sizeHint(self, option, index):
         message = index.data(ChatMessageListModel.MessageRole)
-        if not message or self._is_hidden_system_message(message):
+        if not message or self._is_hidden_message(message):
             return QSize(0, 0)
         bubble_width, _, item_height, _ = self._measure(option, message)
         total_width = (
             self.OUTER_MARGIN
-            + self.AVATAR_SIZE
-            + self.SPACING
+            + self.avatar_size
+            + self.spacing
             + bubble_width
             + self.OUTER_MARGIN
         )
         return QSize(total_width, item_height + (2 * self.OUTER_MARGIN))
 
-    def paint(self, painter, option, index):
+    def paint(self, painter: QPainter, option, index):
         message = index.data(ChatMessageListModel.MessageRole)
-        if not message or self._is_hidden_system_message(message):
+        if not message or self._is_hidden_message(message):
             return
 
         bubble_width, bubble_height, item_height, header_height = self._measure(
@@ -174,38 +195,39 @@ class ChatMessageDelegate(QStyledItemDelegate):
         )
 
         item_top = option.rect.y() + self.OUTER_MARGIN
-        avatar_x = option.rect.x() + self.OUTER_MARGIN
         avatar_y = item_top
-        bubble_x = avatar_x + self.AVATAR_SIZE + self.SPACING
+        avatar_x = option.rect.x() + self.OUTER_MARGIN
+        bubble_x = avatar_x + self.avatar_size + self.spacing
         bubble_y = item_top
-
-        avatar_bg, avatar_fg = avatar_colors_from_name(message["author"])
-        avatar_bg = _to_color(avatar_bg, "#555555")
-        avatar_fg = _to_color(avatar_fg, "#ffffff")
-        bubble_color = _to_color(message["background"], "#444444")
-        text_color = _to_color(message["color"], "#ffffff")
+        text_color = _to_color(message["color"], COLORS["WHITE_Q"])
+        bubble_color = _to_color(message["background"], COLORS["TRANSPARENT_BLACK2_Q"])
 
         painter.save()
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(avatar_bg)
-        painter.drawRoundedRect(
-            avatar_x, avatar_y, self.AVATAR_SIZE, self.AVATAR_SIZE, 8, 8
-        )
+        if self.with_avatar:
+            avatar_bg, avatar_fg = avatar_colors_from_name(message["author"])
+            avatar_bg = _to_color(avatar_bg, COLORS["GRAY_Q"])
+            avatar_fg = _to_color(avatar_fg, COLORS["WHITE_Q"])
 
-        avatar_font = QFont(option.font)
-        avatar_font.setBold(True)
-        avatar_font.setPointSize(max(option.font.pointSize() + 6, 16))
-        painter.setFont(avatar_font)
-        painter.setPen(avatar_fg)
-        painter.drawText(
-            avatar_x,
-            avatar_y,
-            self.AVATAR_SIZE,
-            self.AVATAR_SIZE,
-            int(Qt.AlignmentFlag.AlignCenter),
-            message["author"][:1].upper(),
-        )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(avatar_bg)
+            painter.drawRoundedRect(
+                avatar_x, avatar_y, self.avatar_size, self.avatar_size, 8, 8
+            )
+
+            avatar_font = QFont(option.font)
+            avatar_font.setBold(True)
+            avatar_font.setPointSize(max(option.font.pointSize() + 6, 16))
+            painter.setFont(avatar_font)
+            painter.setPen(avatar_fg)
+            painter.drawText(
+                avatar_x,
+                avatar_y,
+                self.avatar_size,
+                self.avatar_size,
+                int(Qt.AlignmentFlag.AlignCenter),
+                message["author"][:1].upper(),
+            )
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(bubble_color)
@@ -215,19 +237,30 @@ class ChatMessageDelegate(QStyledItemDelegate):
         text_top = bubble_y + self.BUBBLE_PADDING
         text_width = max(20, bubble_width - (2 * self.BUBBLE_PADDING))
 
-        header_text = (
-            f"[{message['platform']}] " f"{message['author']} " f"[{message['time']}]"
-        )
+        icon = QIcon(resource_path(PLATFORM_ICON[message["platform"]]))
+        header_text = f"{message['author']} [{message['time']}]"
         header_font = QFont(option.font)
         header_font.setBold(True)
         header_metrics = QFontMetrics(header_font)
         painter.setFont(header_font)
         painter.setPen(text_color)
+        icon_size = header_metrics.height()
+        header_text_left = text_left
+        header_text_width = text_width
+        if not icon.isNull():
+            icon_y = text_top + max(0, (header_height - icon_size) // 2)
+            painter.drawPixmap(
+                text_left,
+                icon_y,
+                icon.pixmap(icon_size, icon_size),
+            )
+            header_text_left += icon_size + self.HEADER_SPACING
+            header_text_width = max(20, text_width - icon_size - self.HEADER_SPACING)
         painter.drawText(
-            text_left,
+            header_text_left,
             text_top + header_metrics.ascent(),
             header_metrics.elidedText(
-                header_text, Qt.TextElideMode.ElideRight, text_width
+                header_text, Qt.TextElideMode.ElideRight, header_text_width
             ),
         )
 
@@ -249,9 +282,10 @@ class ChatMessageDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-@lru_cache
 def _to_color(value, fallback):
-    color = QColor(value) if value else QColor(fallback)
+    if isinstance(value, QColor):
+        return value
+    color = QColor(value) if value else _to_color(fallback, COLORS["GRAY_Q"])
     if not color.isValid():
-        color = QColor(fallback)
+        color = _to_color(fallback, COLORS["GRAY_Q"])
     return color

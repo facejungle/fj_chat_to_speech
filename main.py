@@ -228,7 +228,7 @@ class MainWindow(QMainWindow):
         for worker_idx in range(self.message_workers):
             threading.Thread(
                 target=self.process_messages_loop,
-                daemon=False,
+                daemon=True,
                 name=f"process_messages_loop_{worker_idx}",
             ).start()
         threading.Thread(
@@ -1109,7 +1109,6 @@ class MainWindow(QMainWindow):
                 lang=self.language,
             )
             self.youtube = listener
-
             self.youtube.run()
 
     def on_connect_yt(self, listener=None):
@@ -1530,7 +1529,13 @@ class MainWindow(QMainWindow):
 
     def on_chat_overlay_reset(self):
         if hasattr(self, "chat_overlay") and self.chat_overlay:
-            self.chat_overlay.setGeometry(self.x(), self.y(), 400, 600)
+            self.chat_overlay_geometry = (self.x(), self.y(), 400, 600)
+            self.chat_overlay.setGeometry(
+                self.chat_overlay_geometry[0],
+                self.chat_overlay_geometry[1],
+                self.chat_overlay_geometry[2],
+                self.chat_overlay_geometry[3],
+            )
 
     def on_chat_overlay_closed(self):
         if self.chat_overlay is None:
@@ -2317,10 +2322,14 @@ class MainWindow(QMainWindow):
         is_donate=False,
     ):
         logger.debug(
-            "process_chat_message(): msg_id=%s platform=%s author=%s",
+            "process_chat_message(): msg_id=%s platform=%s author=%s is_sponsor=%s is_staff=%s is_owner=%s is_donate=%s",
             msg_id,
             platform,
             author,
+            is_sponsor,
+            is_staff,
+            is_owner,
+            is_donate,
         )
 
         cleaned_author = author.removeprefix("@")
@@ -2346,6 +2355,9 @@ class MainWindow(QMainWindow):
         if is_processed:
             return
 
+        if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
+            return
+
         if self.auto_translate:
             cleaned_text = translate_text(cleaned_text, self.voice_language)
 
@@ -2360,6 +2372,29 @@ class MainWindow(QMainWindow):
             return
 
         cleaned_text = clean_stop_words(cleaned_text, stop_words=self.stop_words)
+
+        self.add_message(
+            platform=platform,
+            author=cleaned_author,
+            text=cleaned_text,
+            background="darkGreen" if is_donate else None,
+        )
+
+        if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
+            return
+
+        read_filter = self.read_filter
+        has_special_status = is_donate or is_staff or is_owner or is_sponsor
+        if has_special_status:
+            if not (
+                (is_donate and _(self.language, "Donation") in read_filter)
+                or (is_staff and _(self.language, "Moderator") in read_filter)
+                or (is_owner and _(self.language, "Author") in read_filter)
+                or (is_sponsor and _(self.language, "Sponsor") in read_filter)
+            ):
+                return
+        elif _(self.language, "Regular") not in read_filter:
+            return
 
         toxic_val = self.calc_toxicity(cleaned_text)
         if toxic_val:
@@ -2376,34 +2411,6 @@ class MainWindow(QMainWindow):
                     severity=detox_value,
                 )
                 return
-
-        self.add_message(
-            platform=platform,
-            author=cleaned_author,
-            text=cleaned_text,
-            background="darkGreen" if is_donate else None,
-        )
-
-        if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
-            return
-
-        read_filter = self.read_filter
-        if is_staff and _(self.language, "Moderator") not in read_filter:
-            return
-        elif is_owner and _(self.language, "Author") not in read_filter:
-            return
-        elif is_sponsor and _(self.language, "Sponsor") not in read_filter:
-            return
-        elif is_donate and _(self.language, "Donation") not in read_filter:
-            return
-        elif (
-            not is_staff
-            and not is_owner
-            and not is_sponsor
-            and not is_donate
-            and _(self.language, "Regular") not in read_filter
-        ):
-            return
 
         cleaned_text = convert_numbers_to_words(cleaned_text, self.voice_language)
         cleaned_text = clean_symbol_spam(cleaned_text)

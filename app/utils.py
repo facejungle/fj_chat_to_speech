@@ -95,6 +95,13 @@ def get_user_data_dir() -> str:
     )
 
 
+def get_banned_list_path():
+    _dir = get_user_data_dir()
+    _dir = os.path.join(_dir, "spam_filter")
+    os.makedirs(_dir, exist_ok=True)
+    return os.path.join(_dir, "banned.txt")
+
+
 def get_settings_path() -> str:
     settings_dir = get_user_data_dir()
     os.makedirs(settings_dir, exist_ok=True)

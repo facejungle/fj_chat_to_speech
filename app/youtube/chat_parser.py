@@ -19,6 +19,34 @@ class YouTubeChatParser:
         "pollUpdated",
         "pollClosed",
     }
+    DONATE_TYPE_LABELS = {
+        "donation": "Donation",
+        "superChat": "Super Chat",
+        "paidMessage": "Super Chat",
+        "tickerPaidMessageItem": "Super Chat",
+        "superSticker": "Super Sticker",
+        "paidSticker": "Super Sticker",
+        "tickerPaidStickerItem": "Super Sticker",
+        "newSponsor": "New sponsor",
+        "membershipItem": "New sponsor",
+        "legacyPaidMessage": "New sponsor",
+        "tickerSponsorItem": "New sponsor",
+        "membershipGiftPurchase": "New sponsor",
+        "sponsorshipsGiftPurchaseAnnouncement": "New sponsor",
+        "giftMembershipReceived": "New sponsor",
+    }
+    DONATE_TYPE_KEYWORDS = (
+        "donation",
+        "superchat",
+        "supersticker",
+        "superthanks",
+        "paidmessage",
+        "paidsticker",
+        "membership",
+        "sponsor",
+        "gift",
+        "purchase",
+    )
 
     def __init__(
         self,
@@ -151,6 +179,7 @@ class YouTubeChatParser:
 
     def _build_message_payload(self, message):
         message_type = str(getattr(message, "type", "") or "").strip()
+        normalized_type = message_type.casefold()
         message_text = str(getattr(message, "message", "") or "").strip()
         amount_text = str(getattr(message, "amountString", "") or "").strip()
         currency_text = str(getattr(message, "currency", "") or "").strip()
@@ -169,25 +198,39 @@ class YouTubeChatParser:
                 text = _(self.lang, "Poll is closed")
             else:
                 text = _(self.lang, "Poll")
-        elif message_type == "donation":
-            text = _(self.lang, "Donation")
-            is_donate = True
-        elif message_type == "superChat":
-            text = _(self.lang, "Super Chat")
-            is_donate = True
-        elif message_type == "superSticker":
-            text = _(self.lang, "Super Sticker")
-            is_donate = True
-        elif message_type == "newSponsor":
-            text = _(self.lang, "New sponsor")
-            is_donate = True
+        else:
+            label = self.DONATE_TYPE_LABELS.get(message_type)
+            if label is None and any(
+                keyword in normalized_type for keyword in self.DONATE_TYPE_KEYWORDS
+            ):
+                if "sticker" in normalized_type:
+                    label = "Super Sticker"
+                elif any(
+                    keyword in normalized_type
+                    for keyword in ("sponsor", "membership", "gift")
+                ):
+                    label = "New sponsor"
+                elif any(
+                    keyword in normalized_type
+                    for keyword in ("chat", "message", "thanks")
+                ):
+                    label = "Super Chat"
+                else:
+                    label = "Donation"
 
-        if amount_text and currency_text:
+            if label:
+                text = _(self.lang, label)
+                is_donate = True
+
+        if not text:
+            text = message_text
+
+        if text and amount_text and currency_text:
             text += f" [{amount_text} {currency_text}]"
-        elif amount_text:
+        elif text and amount_text:
             text += f" [{amount_text}]"
 
-        if message_text:
+        if message_text and text != message_text:
             text += f": {message_text}"
 
         return {"msg": text, "is_donate": is_donate}

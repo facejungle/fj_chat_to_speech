@@ -161,12 +161,13 @@ class TwitchChatListener:
         try:
             while reconnect_attempts < self.MAX_RETRIES and not self._is_stopping:
                 self.is_connected = False
-                if not self._create_socket():
-                    reconnect_attempts += 1
-                    sleep(reconnect_attempts)
-                    continue
-
-                while not self.is_connected and not self._is_stopping:
+                is_socket_created = self._create_socket()
+                
+                while (
+                    is_socket_created
+                    and not self.is_connected
+                    and not self._is_stopping
+                ):
                     try:
                         response = self.sock.recv(4096).decode("utf-8", errors="ignore")
                         lines = response.strip().split("\r\n")

@@ -275,6 +275,7 @@ class YouTubeChatParser:
             return
 
         self.disconnect_signal = False
+        self.is_connected = True
 
         try:
             use_interruptable = current_thread() is main_thread()
@@ -324,13 +325,16 @@ class YouTubeChatParser:
                     break
 
         except Exception as e:
+            err_text = str(e)
+            if "Finished chat data" in err_text:
+                return self.disconnect()
+
             if not self.disconnect_signal:
                 self.on_error(
                     f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}"
                 )
 
-        finally:
-            self.disconnect()
+        self.disconnect()
 
     def disconnect(self):
         self.disconnect_signal = True

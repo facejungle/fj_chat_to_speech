@@ -204,8 +204,12 @@ TRANSLATIONS = {
         "Moderator": "Модератор",
         "skip load": "пропуск загрузки",
         "Load models": "Загрузить модели",
-        "Chat window": "Окно чата",
-        "Close chat window": "Закрыть окно чата",
+        "Chat overlay": "Оверлей чата",
+        "Show chat": "Показать чат",
+        "Reset position": "Сброс позиции",
+        "Close": "Закрыть",
+        "Always On Top": "Всегда сверху",
+        "Resize": "Изменить размер",
     },
 }
 

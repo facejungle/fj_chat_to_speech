@@ -107,22 +107,15 @@ def clean_build_dirs():
 
 def create_spec_file():
     """Create single-file PyInstaller spec for all platforms"""
-    data_files = []
-
-    if os.path.exists(ICON_PATH):
-        data_files.append((ICON_PATH, "img"))
-
-    stop_words_files = [
+    data_files = [
+        (ICON_PATH, "img"),
+        ("img/system.svg", "img"),
+        ("img/twitch.svg", "img"),
+        ("img/youtube.svg", "img"),
         ("spam_filter/banned.txt", "spam_filter"),
         ("spam_filter/ru.txt", "spam_filter"),
         ("spam_filter/en.txt", "spam_filter"),
     ]
-
-    for src, dst in stop_words_files:
-        if os.path.exists(src):
-            data_files.append((src, dst))
-        else:
-            print(f"[WARN] Data file not found and will be skipped: {src}")
 
     excludes_str = str(EXCLUDES).replace("'", '"')
     hidden_imports_str = str(HIDDEN_IMPORTS).replace("'", '"')

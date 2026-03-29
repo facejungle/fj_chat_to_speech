@@ -6,8 +6,8 @@ import platform
 import re
 import sys
 from typing import Iterable, TextIO
+import unicodedata
 
-import sounddevice as sd
 import num2words
 import urllib
 
@@ -19,6 +19,33 @@ from app.translations import _
 _detoxify_ = None
 _detoxify_impl_ = None
 _torch_hub_ = None
+_torch_no_grad_ = None
+
+_emoji_shortcode_cache: dict[str, str] = {}
+EMOJI_SHORTCODE_RE = re.compile(r":[0-9A-Za-z_+-]{1,64}:")
+_EMOJI_SKIN_TONES = (
+    ("pink", "LIGHT SKIN TONE"),
+    ("light", "LIGHT SKIN TONE"),
+    ("medium-light", "MEDIUM-LIGHT SKIN TONE"),
+    ("medium", "MEDIUM SKIN TONE"),
+    ("medium-dark", "MEDIUM-DARK SKIN TONE"),
+    ("dark", "DARK SKIN TONE"),
+)
+_EMOJI_NAME_ALIASES = {
+    "+1": "THUMBS UP SIGN",
+    "-1": "THUMBS DOWN SIGN",
+    "thumbsup": "THUMBS UP SIGN",
+    "thumbsdown": "THUMBS DOWN SIGN",
+    "heart": "RED HEART",
+}
+
+
+@lru_cache(maxsize=1024)
+def _lookup_unicode_name(name: str) -> str:
+    try:
+        return unicodedata.lookup(name)
+    except KeyError:
+        return ""
 
 
 def get_detoxify_impl():
@@ -34,7 +61,9 @@ def get_torch_hub():
     global _torch_hub_
     if _torch_hub_ is None:
         from torch import hub as torch_hub
+        from torch import set_num_threads
 
+        set_num_threads(max(1, os.cpu_count() or 1))
         _torch_hub_ = torch_hub
     return _torch_hub_
 
@@ -46,6 +75,16 @@ def get_detoxify():
 
         _detoxify_ = Detoxify
     return _detoxify_
+
+
+def torch_no_grad():
+    global _torch_no_grad_
+    if _torch_no_grad_ is None:
+        from torch import no_grad
+
+        _torch_no_grad_ = no_grad
+
+    return _torch_no_grad_
 
 
 class _NullStream(TextIO):
@@ -93,6 +132,13 @@ def get_user_data_dir() -> str:
     return os.path.join(
         os.path.expanduser("~"), f".{APP_NAME.lower().replace(' ', '_')}"
     )
+
+
+def get_emoji_cache_path():
+    _dir = get_user_data_dir()
+    _dir = os.path.join(_dir, "img", "emoji")
+    os.makedirs(_dir, exist_ok=True)
+    return _dir
 
 
 def get_banned_list_path():
@@ -408,24 +454,6 @@ def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> boo
 
 
 def clean_emoji(text):
-    emoji_pattern = re.compile(
-        "["
-        "\U0001f600-\U0001f64f"  # Emoticons
-        "\U0001f300-\U0001f5ff"  # Symbols & pictographs
-        "\U0001f680-\U0001f6ff"  # Transport & map symbols
-        "\U0001f700-\U0001f77f"  # Alchemical symbols
-        "\U0001f780-\U0001f7ff"  # Geometric shapes
-        "\U0001f800-\U0001f8ff"  # Supplemental arrows
-        "\U0001f900-\U0001f9ff"  # Supplemental symbols
-        "\U0001fa00-\U0001fa6f"  # Chess symbols
-        "\U0001fa70-\U0001faff"  # Symbols and pictographs extended
-        "\U00002702-\U000027b0"  # Dingbats
-        "\U000024c2-\U0001f251"  # Enclosed characters
-        "]+",
-        flags=re.UNICODE,
-    )
-    text = emoji_pattern.sub("", text)
-    text = re.sub(r"[\u200d\ufe0f\U0001f3fb-\U0001f3ff]", "", text)
     text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", "", text)
     return re.sub(r":[0-9A-Za-z_+-]{1,64}:", "", text).strip()
 
@@ -582,6 +610,17 @@ def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
     return "".join(result)
 
 
+def all_letters_is(text: str, lang: str = "en") -> bool:
+    letters = [ch for ch in text if ch.isalpha()]
+
+    if lang == "en":
+        return all(re.match(r"[A-Za-z]", ch) for ch in letters)
+    if lang == "ru":
+        return all(re.match(r"[А-Яа-яЁё]", ch) for ch in letters)
+
+    return True
+
+
 def contain_words_or_nums(text: str, lang: str = "en") -> bool:
     value = str(text or "").strip()
     if not value:
@@ -642,7 +681,7 @@ def convert_numbers_to_words(text: str, lang: str) -> str:
         except Exception:
             return num
 
-    number_pattern = r"-?\d+(?:[.,]\d+)?"
+    number_pattern = r"\d+(?:[.,]\d+)?"
     converted_text = re.sub(number_pattern, replace_number, text)
     return converted_text
 
@@ -757,3 +796,74 @@ def parse_youtube_video_id(url: str) -> str | None:
 
     except Exception:
         return
+
+
+def _emoji_from_shortcode(shortcode: str) -> str:
+    cached = _emoji_shortcode_cache.get(shortcode)
+    if cached is not None:
+        return cached
+
+    raw = shortcode.strip(":").replace("_", "-").casefold()
+    if not raw:
+        _emoji_shortcode_cache[shortcode] = shortcode
+        return shortcode
+
+    tone = ""
+    padded_raw = f"-{raw}-"
+    for token, tone_name in _EMOJI_SKIN_TONES:
+        marker = f"-{token}-"
+        if marker in padded_raw:
+            raw = raw.replace(token, "").replace("--", "-").strip("-")
+            tone = tone_name
+            break
+
+    words = [word for word in raw.split("-") if word]
+    if not words:
+        _emoji_shortcode_cache[shortcode] = shortcode
+        return shortcode
+
+    normalized = "-".join(words)
+    candidates = []
+    alias_name = _EMOJI_NAME_ALIASES.get(normalized)
+    if alias_name:
+        candidates.append(alias_name)
+
+    joined = " ".join(words).upper()
+    candidates.append(joined)
+
+    reversed_joined = " ".join(reversed(words)).upper()
+    if reversed_joined != joined:
+        candidates.append(reversed_joined)
+
+    if len(words) == 2:
+        sign_name = f"{joined} SIGN"
+        if sign_name not in candidates:
+            candidates.append(sign_name)
+
+        reversed_sign_name = f"{reversed_joined} SIGN"
+        if reversed_sign_name not in candidates:
+            candidates.append(reversed_sign_name)
+
+    emoji = ""
+    for candidate in candidates:
+        emoji = _lookup_unicode_name(candidate)
+        if emoji:
+            break
+
+    if emoji and tone:
+        emoji += _lookup_unicode_name(tone)
+
+    result = emoji or shortcode
+    _emoji_shortcode_cache[shortcode] = result
+    return result
+
+
+def convert_emojis(text: str) -> str:
+    text = str(text or "")
+    if ":" not in text:
+        return text
+
+    return EMOJI_SHORTCODE_RE.sub(
+        lambda match: _emoji_from_shortcode(match.group(0)),
+        text,
+    )

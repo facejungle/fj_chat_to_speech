@@ -186,7 +186,9 @@ class AuthWorker(QThread):
 
     @staticmethod
     def ensure_valid_access_token(client_id, access_token, refresh_token, lang="en"):
-        if AuthWorker.is_access_token_valid(access_token):
+        if AuthWorker.is_access_token_valid(access_token=access_token):
             return access_token, refresh_token
 
-        return AuthWorker.refresh_access_token(client_id, refresh_token, lang)
+        return AuthWorker.refresh_access_token(
+            client_id=client_id, refresh_token=refresh_token, lang=lang
+        )

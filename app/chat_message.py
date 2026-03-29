@@ -5,7 +5,15 @@ from typing import TypedDict
 
 from PyQt6 import sip
 from PyQt6.QtWidgets import QStyledItemDelegate, QListView
-from PyQt6.QtCore import Qt, QAbstractListModel, QModelIndex, QSize, QObject, QUrl
+from PyQt6.QtCore import (
+    Qt,
+    QAbstractListModel,
+    QModelIndex,
+    QSize,
+    QObject,
+    QUrl,
+    QTimer,
+)
 from PyQt6.QtGui import (
     QFont,
     QColor,
@@ -29,6 +37,7 @@ SPACING = 10
 BUBBLE_PADDING = 10
 HEADER_SPACING = 4
 EMOJI_CACHE_SIZE = 24
+NETWORK_TRANSFER_TIMEOUT_MS = 15000
 
 
 class ChatMessageSegment(TypedDict, total=False):
@@ -55,6 +64,7 @@ class _ChatEmojiStore(QObject):
         self._manager = QNetworkAccessManager(self)
         self._cache: dict[str, QImage] = {}
         self._pending: dict[str, list[QListView]] = {}
+        self._replies: dict[str, QNetworkReply] = {}
         self._cache_dir = get_emoji_cache_path()
 
     def _cache_path(self, url: str) -> str:
@@ -88,22 +98,52 @@ class _ChatEmojiStore(QObject):
         if waiters is not None:
             if view is not None and view not in waiters:
                 waiters.append(view)
-            return
+            reply = self._replies.get(url)
+            if (
+                reply is not None
+                and not sip.isdeleted(reply)
+                and not reply.isFinished()
+            ):
+                return
+            self._pending.pop(url, None)
+            self._replies.pop(url, None)
 
         waiters = []
         if view is not None:
             waiters.append(view)
         self._pending[url] = waiters
 
-        reply = self._manager.get(QNetworkRequest(QUrl(url)))
+        request = QNetworkRequest(QUrl(url))
+        request.setTransferTimeout(NETWORK_TRANSFER_TIMEOUT_MS)
+        request.setAttribute(QNetworkRequest.Attribute.Http2AllowedAttribute, False)
+        reply = self._manager.get(request)
+        self._replies[url] = reply
         reply.finished.connect(lambda r=reply, u=url: self._finish(u, r))
+        reply.errorOccurred.connect(lambda _e, r=reply, u=url: self._finish(u, r))
+        QTimer.singleShot(
+            NETWORK_TRANSFER_TIMEOUT_MS,
+            lambda r=reply, u=url: self._expire(u, r),
+        )
+
+    def _expire(self, url: str, reply: QNetworkReply):
+        current = self._replies.get(url)
+        if current is not reply or sip.isdeleted(reply) or reply.isFinished():
+            return
+        reply.abort()
+        self._finish(url, reply)
 
     def _finish(self, url: str, reply: QNetworkReply):
-        try:
-            if sip.isdeleted(reply):
-                return
+        current = self._replies.get(url)
+        if current is not reply:
+            return
 
-            if reply.error() == QNetworkReply.NetworkError.NoError:
+        self._replies.pop(url, None)
+        waiters = self._pending.pop(url, [])
+        try:
+            if (
+                not sip.isdeleted(reply)
+                and reply.error() == QNetworkReply.NetworkError.NoError
+            ):
                 payload = bytes(reply.readAll())
                 image = QImage()
                 image.loadFromData(payload)
@@ -125,7 +165,6 @@ class _ChatEmojiStore(QObject):
                         except OSError:
                             pass
         finally:
-            waiters = self._pending.pop(url, [])
             if not sip.isdeleted(reply):
                 reply.deleteLater()
             for view in waiters:
@@ -153,6 +192,7 @@ class _ChatAvatarStore(QObject):
         self._manager = QNetworkAccessManager(self)
         self._cache: dict[str, QPixmap] = {}
         self._pending: dict[str, list[QListView]] = {}
+        self._replies: dict[str, QNetworkReply] = {}
 
     def get(self, url: str) -> QPixmap | None:
         return self._cache.get(url)
@@ -165,22 +205,52 @@ class _ChatAvatarStore(QObject):
         if waiters is not None:
             if view is not None and view not in waiters:
                 waiters.append(view)
-            return
+            reply = self._replies.get(url)
+            if (
+                reply is not None
+                and not sip.isdeleted(reply)
+                and not reply.isFinished()
+            ):
+                return
+            self._pending.pop(url, None)
+            self._replies.pop(url, None)
 
         waiters = []
         if view is not None:
             waiters.append(view)
         self._pending[url] = waiters
 
-        reply = self._manager.get(QNetworkRequest(QUrl(url)))
+        request = QNetworkRequest(QUrl(url))
+        request.setTransferTimeout(NETWORK_TRANSFER_TIMEOUT_MS)
+        request.setAttribute(QNetworkRequest.Attribute.Http2AllowedAttribute, False)
+        reply = self._manager.get(request)
+        self._replies[url] = reply
         reply.finished.connect(lambda r=reply, u=url: self._finish(u, r))
+        reply.errorOccurred.connect(lambda _e, r=reply, u=url: self._finish(u, r))
+        QTimer.singleShot(
+            NETWORK_TRANSFER_TIMEOUT_MS,
+            lambda r=reply, u=url: self._expire(u, r),
+        )
+
+    def _expire(self, url: str, reply: QNetworkReply):
+        current = self._replies.get(url)
+        if current is not reply or sip.isdeleted(reply) or reply.isFinished():
+            return
+        reply.abort()
+        self._finish(url, reply)
 
     def _finish(self, url: str, reply: QNetworkReply):
-        try:
-            if sip.isdeleted(reply):
-                return
+        current = self._replies.get(url)
+        if current is not reply:
+            return
 
-            if reply.error() == QNetworkReply.NetworkError.NoError:
+        self._replies.pop(url, None)
+        waiters = self._pending.pop(url, [])
+        try:
+            if (
+                not sip.isdeleted(reply)
+                and reply.error() == QNetworkReply.NetworkError.NoError
+            ):
                 payload = bytes(reply.readAll())
                 image = QImage()
                 if image.loadFromData(payload) and not image.isNull():
@@ -192,7 +262,6 @@ class _ChatAvatarStore(QObject):
                     )
                     self._cache[url] = QPixmap.fromImage(image)
         finally:
-            waiters = self._pending.pop(url, [])
             if not sip.isdeleted(reply):
                 reply.deleteLater()
             for view in waiters:

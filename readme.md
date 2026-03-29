@@ -1,6 +1,7 @@
 # FJ Chat to Speech
 
 <img alt="FJ Chat to Speech" src="./docs/app_0.png" width="700">
+<img alt="FJ Chat to Speech - Chat overlay" src="./docs/app_1.png" width="250">
 
 FJ Chat to Speech is an open-source desktop application that converts live chat messages from YouTube and Twitch streams into real-time speech.
 
@@ -9,20 +10,33 @@ FJ Chat to Speech is an open-source desktop application that converts live chat 
 - Local toxicity filtering with `Detoxify`
 - English and Russian voices
 - Adjustable speech speed and volume
-- Number pronunciation support
-- Optional message translation before speech
 - Stop-word list editor
-- Spam filters (symbol spam, links)
 - List of banned
 - English and Russian UI
 - Free and open-source
 
 ## <a href="https://github.com/facejungle/fj_chat_to_speech/releases/latest/" target="_blank">Download</a>
 
-- `F11` - Expand/collapse chat to full window
+- `F12` - Chat overlay
 - `Arrow Left` / `Arrow Right` - Speech rate
 - `Arrow Up` / `Arrow Down` - Volume
 - `Space` - Pause/Play
+
+## Reading chat messages by voice
+
+- Flexible choice of messages to be voiced (channel author, donator, sponsor, moderator, regular messages)
+- Automatic message translation
+- Voiceover of nicknames and platform names
+- Voiceover of paid messages
+- Spam filters (symbol spam, links)
+
+## Chat Overlay
+
+- Chat overlay at the Always on top
+- Stop-words clearing
+- Automatic message translation
+- Colored message background (channel author, donator, sponsor, moderator)
+- Avatars display
 
 ## System requirements
 
@@ -58,7 +72,7 @@ brew install ffmpeg
 
 ## How is the banned list formed?
 
-Each toxic message is assigned a score. For example, if a message contains stop-words, it receives a score of `0.25`. The message is also processed through the Detoxify model, which assigns a toxicity level ranging from `0.0` to `1.0`. However, messages with a toxicity level below the value specified in the `Toxicity threshold` parameter are ignored.
+Each toxic message is assigned a rating. The message is processed by the Detoxify model, which assigns a toxicity level between `0.0` and `1.0`. However, messages with a toxicity level below the value specified in the `Toxicity Threshold` parameter are ignored.
 
 During the application's operation, statistics are accumulated for toxic users. If a user exceeds the value specified in the `Toxicity level for user ban` parameter, they are added to the banned list.
 

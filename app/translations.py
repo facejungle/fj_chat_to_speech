@@ -110,8 +110,7 @@ TRANSLATIONS = {
         "Russian": "Русский",
         "Interface Language": "Язык интерфейса",
         "Speaker language": "Язык речи",
-        "Speech configuration": "Настройки речи",
-        "Message Settings": "Настройки сообщений",
+        "Speech Settings": "Настройки речи",
         "Delays and processing": "Задержки и обработка",
         "Configure": "Настроить",
         "Connected": "Подключено",
@@ -187,6 +186,8 @@ TRANSLATIONS = {
         "Toxicity level for user ban": "Уровень токсичности для блокировки пользователя",
         "Banned": "Заблокирован",
         "Reconnect": "Переподключение",
+        "Failed to authorize": "Не удалось авторизоваться",
+        "Failed to join to channel": "Не удалось присоединиться к каналу",
         "Failed to refresh access token": "Не удалось обновить токен доступа (access token)",
         "Failed to create socket connection": "Не удалось создать сокет соединение",
         "Donation": "Донат",
@@ -204,12 +205,20 @@ TRANSLATIONS = {
         "Moderator": "Модератор",
         "skip load": "пропуск загрузки",
         "Load models": "Загрузить модели",
-        "Chat overlay": "Оверлей чата",
+        "Chat": "Чат",
+        "Chat settings": "Настройки чата",
         "Show chat": "Показать чат",
         "Reset position": "Сброс позиции",
         "Close": "Закрыть",
         "Always On Top": "Всегда сверху",
         "Resize": "Изменить размер",
+        "Clear stop-words": "Очищать стоп-слова",
+        "Show avatars": "Отображать аватарки",
+        "Show system messages": "Отображать системные сообщения",
+        "Clear chat": "Очистить чат",
+        "Transparent messages": "Прозрачные сообщения",
+        "Too many timeouts in a row": "Слишком много таймаутов подряд",
+        "Too many empty data in a row": "Слишком много пустых данных подряд",
     },
 }
 
@@ -224,6 +233,13 @@ DEFAULT_LANGUAGE = (
     else "en"
 )
 LANG_CODES = {"en": "English", "ru": "Russian"}
+
+_SYMBOLS = {
+    "%": {"ru": " процент ", "en": " percentage "},
+    "+": {"ru": " плюс ", "en": " plus "},
+    "=": {"ru": " равно ", "en": " equal "},
+    "&": {"ru": " и ", "en": " and "},
+}
 
 _CYR_TO_LAT = {
     "а": "a",
@@ -315,6 +331,17 @@ def _map_char_with_case(ch: str, mapping: dict[str, str]) -> str:
     return base
 
 
+def map_symbols(text: str, lang: str) -> str:
+    src = str(text or "")
+    string = ""
+    for char in src:
+        if char in _SYMBOLS.keys():
+            string += _SYMBOLS[char][lang]
+        else:
+            string += char
+    return string
+
+
 def transliteration(text: str, lang: str) -> str:
     """
     Transliterate text to target language.
@@ -357,13 +384,23 @@ def _(lang, key):
     return TRANSLATIONS.get(lang, {}).get(key, key)
 
 
+def _extract_translation(result, fallback):
+    if isinstance(result, list):
+        fallback_list = list(fallback)
+        translated = []
+        for idx, item in enumerate(result):
+            translated.append(getattr(item, "text", fallback_list[idx]))
+        return translated
+    return getattr(result, "text", fallback)
+
+
 def _proc_translate_external(q, txt, dst):
     """Module-level worker for multiprocessing spawn on Windows."""
     tr = Translator()
     r = tr.translate(txt, dest=dst)
     if inspect.isawaitable(r):
         r = asyncio.run(r)
-    q.put(getattr(r, "text", txt))
+    q.put(_extract_translation(r, txt))
 
 
 def translate_text(text, dest="en"):
@@ -378,3 +415,67 @@ def translate_text(text, dest="en"):
         #     status="error",
         # )
         return text
+
+
+def translate_texts(texts, dest="en"):
+    source_texts = list(texts or [])
+    if not source_texts:
+        return source_texts
+
+    try:
+        q = multiprocessing.Queue()
+        _proc_translate_external(q, source_texts, dest)
+        translated = q.get_nowait()
+        if isinstance(translated, list) and len(translated) == len(source_texts):
+            return translated
+    except:
+        pass
+
+    return source_texts
+
+
+def translate_segments(text: str, segments=None, lang="en"):
+    translated_text = text
+    translated_segments = segments
+    texts_to_translate = []
+    segment_targets = []
+    has_segments = isinstance(segments, list)
+
+    if has_segments:
+        for idx, segment in enumerate(segments):
+            if isinstance(segment, str):
+                texts_to_translate.append(segment)
+                segment_targets.append(("str", idx))
+            elif isinstance(segment, dict) and segment.get("text"):
+                texts_to_translate.append(str(segment.get("text", "")))
+                segment_targets.append(("dict", idx))
+    else:
+        texts_to_translate.append(text)
+
+    translated_parts = translate_texts(texts_to_translate, lang)
+    if translated_parts:
+        if has_segments:
+            translated_segments = list(segments)
+            for translated_value, (segment_type, idx) in zip(
+                translated_parts,
+                segment_targets,
+            ):
+                if segment_type == "str":
+                    translated_segments[idx] = translated_value
+                else:
+                    translated_segment = dict(translated_segments[idx])
+                    translated_segment["text"] = translated_value
+                    translated_segments[idx] = translated_segment
+
+            translated_text = "".join(
+                (
+                    segment
+                    if isinstance(segment, str)
+                    else str(segment.get("text", segment.get("txt", "")) or "")
+                )
+                for segment in translated_segments
+            )
+        else:
+            translated_text = translated_parts[0]
+
+    return translated_text, translated_segments

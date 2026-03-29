@@ -8,14 +8,14 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 from PyQt6.QtCore import Qt, QEvent
-from PyQt6.QtGui import QFont, QIcon, QCloseEvent, QMouseEvent
+from PyQt6.QtGui import QFont, QIcon, QCloseEvent, QKeySequence, QMouseEvent, QShortcut
 
 from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 
 from app.constants import APP_NAME
-from app.constants_qt import COLORS
 from app.translations import _
-from app.utils import icon_path, resource_path
+
+TRANSPARENT_BLACK = "rgba(0, 0, 0, 150)"
 
 
 class ChatOverlayWindow(QWidget):
@@ -23,9 +23,14 @@ class ChatOverlayWindow(QWidget):
         self,
         parent,
         model: ChatMessageListModel,
-        font: QFont,
+        icon: QIcon,
+        font_size: int,
+        geometry: tuple[int, int, int, int],
         lang: str = "en",
         always_on_top: bool = False,
+        show_avatars: bool = False,
+        show_sys_msg: bool = False,
+        is_transparent: bool = True,
     ):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self._main_window = parent
@@ -33,14 +38,19 @@ class ChatOverlayWindow(QWidget):
         self._resize_origin = None
         self._resize_size = None
         self.lang = lang
+        self.show_avatars = show_avatars
+        self.show_sys_msg = show_sys_msg
         self.always_on_top = always_on_top
+        self.is_transparent = is_transparent
         self.setup_window_title()
-        icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(icon)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setMinimumSize(320, 240)
-        self.resize(640, 720)
+        self.setGeometry(*geometry)
+
+        self.show_chat_overlay_shortcut = QShortcut(QKeySequence("F12"), self)
+        self.show_chat_overlay_shortcut.activated.connect(self.close)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -49,18 +59,15 @@ class ChatOverlayWindow(QWidget):
         self.title_bar = QWidget(self)
         self.title_bar.setCursor(Qt.CursorShape.SizeAllCursor)
         self.title_bar.setStyleSheet(
-            f"background-color: {COLORS['TRANSPARENT_BLACK']};"
+            f"background-color: {TRANSPARENT_BLACK};"
             "border-radius: 10px;"
             "font-size: 12px;"
+            "font-weight: 800;"
         )
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(14, 10, 14, 10)
         title_layout.setSpacing(0)
         self.title_label = QLabel(APP_NAME, self.title_bar)
-        title_font = QFont(font)
-        title_font.setBold(True)
-        title_font.setPointSize(max(font.pointSize(), 12))
-        self.title_label.setFont(title_font)
         self.title_label.setStyleSheet("color: white; background: transparent;")
         title_layout.addWidget(self.title_label)
         title_layout.addStretch(1)
@@ -92,7 +99,6 @@ class ChatOverlayWindow(QWidget):
         self.chat_view.setWordWrap(True)
         self.chat_view.setUniformItemSizes(False)
         self.chat_view.setSpacing(4)
-        self.chat_view.setFont(font)
         self.chat_view.setFrameShape(QFrame.Shape.NoFrame)
         self.chat_view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.chat_view.viewport().setAttribute(
@@ -104,7 +110,12 @@ class ChatOverlayWindow(QWidget):
         )
         self.chat_view.setModel(model)
         self.chat_view.setItemDelegate(
-            ChatMessageDelegate(self.chat_view, hide_system_msg=True, with_avatar=False)
+            ChatMessageDelegate(
+                self.chat_view,
+                hide_system_msg=not self.show_sys_msg,
+                with_avatar=self.show_avatars,
+                is_transparent=self.is_transparent,
+            )
         )
         layout.addWidget(self.chat_view)
 
@@ -115,14 +126,16 @@ class ChatOverlayWindow(QWidget):
         self.always_on_top_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.always_on_top_button.setStyleSheet(
             "QPushButton {"
-            "color: white;"
+            "color: black;"
             "background-color: rgba(255, 255, 255, 24);"
-            "border: 1px solid rgba(255, 255, 255, 45);"
+            "border: 1px solid rgba(0, 0, 0, 45);"
             "border-radius: 10px;"
             "padding: 4px 10px;"
             "}"
             "QPushButton:checked {"
-            f"background-color: {COLORS['TRANSPARENT_BLACK']};"
+            "color: white;"
+            "border: 1px solid rgba(255, 255, 255, 45);"
+            f"background-color: {TRANSPARENT_BLACK};"
             "}"
         )
         self.always_on_top_button.clicked.connect(self._toggle_always_on_top)
@@ -136,7 +149,7 @@ class ChatOverlayWindow(QWidget):
         self.size_grip.setCursor(Qt.CursorShape.SizeFDiagCursor)
         self.size_grip.setStyleSheet(
             "color: white;"
-            f"background-color: {COLORS['TRANSPARENT_BLACK']};"
+            f"background-color: {TRANSPARENT_BLACK};"
             "border: 1px solid rgba(255, 255, 255, 45);"
             "border-radius: 10px;"
             "padding: 4px 10px;"
@@ -149,6 +162,7 @@ class ChatOverlayWindow(QWidget):
         )
         layout.addLayout(resize_layout)
 
+        self.set_font_size(font_size)
         self.setup_tooltips()
 
     def _toggle_always_on_top(self, checked: bool):
@@ -222,3 +236,39 @@ class ChatOverlayWindow(QWidget):
 
         self.setup_window_title()
         self.setup_tooltips()
+
+    def set_font(self, font: QFont):
+        self.chat_view.setFont(font)
+        self.chat_view.doItemsLayout()
+
+    def set_font_size(self, size: int):
+        font = self.chat_view.font()
+        font.setPointSize(size)
+        self.chat_view.setFont(font)
+        self.chat_view.doItemsLayout()
+
+    def set_show_sys_msg(self, value: bool):
+        self.show_sys_msg = value
+        self._set_model_delegate()
+
+    def set_show_avatars(self, value: bool):
+        self.show_avatars = value
+        self._set_model_delegate()
+
+    def set_is_transparent(self, value: bool):
+        self.is_transparent = value
+        self._set_model_delegate()
+
+    def _set_model_delegate(
+        self, show_sys_msg=None, show_avatars=None, is_transparent=None
+    ):
+        self.chat_view.setItemDelegate(
+            ChatMessageDelegate(
+                self.chat_view,
+                hide_system_msg=(
+                    not show_sys_msg if show_sys_msg else not self.show_sys_msg
+                ),
+                with_avatar=show_avatars or self.show_avatars,
+                is_transparent=is_transparent or self.is_transparent,
+            )
+        )

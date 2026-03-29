@@ -1,7 +1,7 @@
 import platform
 
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 
 PADDING = 20
 VOICES = {
@@ -48,7 +48,6 @@ SAMPLE_RATE = 48000
 
 DEFAULTS = {
     "voice": "random",
-    "auto_scroll": True,
     "add_accents": True,
     "read_author_names": False,
     "read_platform_names": False,
@@ -63,13 +62,25 @@ DEFAULTS = {
     "volume": 100,
     "speech_rate": "medium",
     "speech_delay": 1.5,
+    "chat_overlay_autoscroll": True,
+    "chat_overlay_show_avatars": False,
+    "chat_overlay_show_sys_msg": False,
+    "chat_overlay_clr_stop_words": True,
+    "chat_window_always_on_top": True,
+    "chat_overlay_is_transparent": True,
 }
 
 
-PLATFORM_ICON = {
-    "system": "img\\system.svg" if platform.system() == "Windows" else "img/system.svg",
-    "twitch": "img\\twitch.svg" if platform.system() == "Windows" else "img/twitch.svg",
-    "youtube": (
-        "img\\youtube.svg" if platform.system() == "Windows" else "img/youtube.svg"
-    ),
-}
+PLATFORM_ICON = (
+    {
+        "system": "img\\system.svg",
+        "twitch": "img\\twitch.svg",
+        "youtube": "img\\youtube.svg",
+    }
+    if platform.system() == "Windows"
+    else {
+        "system": "img/system.svg",
+        "twitch": "img/twitch.svg",
+        "youtube": "img/youtube.svg",
+    }
+)

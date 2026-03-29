@@ -9,45 +9,45 @@ from urllib.request import Request, urlopen
 from app.translations import _, translate_text
 from app.utils import parse_youtube_video_id
 
+MAX_RETRIES = 10
+POLL_TYPES = {
+    "poll",
+    "liveChatPoll",
+    "pollOpened",
+    "pollUpdated",
+    "pollClosed",
+}
+DONATE_TYPE_LABELS = {
+    "donation": "Donation",
+    "superChat": "Super Chat",
+    "paidMessage": "Super Chat",
+    "tickerPaidMessageItem": "Super Chat",
+    "superSticker": "Super Sticker",
+    "paidSticker": "Super Sticker",
+    "tickerPaidStickerItem": "Super Sticker",
+    "newSponsor": "New sponsor",
+    "membershipItem": "New sponsor",
+    "legacyPaidMessage": "New sponsor",
+    "tickerSponsorItem": "New sponsor",
+    "membershipGiftPurchase": "New sponsor",
+    "sponsorshipsGiftPurchaseAnnouncement": "New sponsor",
+    "giftMembershipReceived": "New sponsor",
+}
+DONATE_TYPE_KEYWORDS = (
+    "donation",
+    "superchat",
+    "supersticker",
+    "superthanks",
+    "paidmessage",
+    "paidsticker",
+    "membership",
+    "sponsor",
+    "gift",
+    "purchase",
+)
+
 
 class YouTubeChatParser:
-    MAX_RETRIES = 10
-    POLL_TYPES = {
-        "poll",
-        "liveChatPoll",
-        "pollOpened",
-        "pollUpdated",
-        "pollClosed",
-    }
-    DONATE_TYPE_LABELS = {
-        "donation": "Donation",
-        "superChat": "Super Chat",
-        "paidMessage": "Super Chat",
-        "tickerPaidMessageItem": "Super Chat",
-        "superSticker": "Super Sticker",
-        "paidSticker": "Super Sticker",
-        "tickerPaidStickerItem": "Super Sticker",
-        "newSponsor": "New sponsor",
-        "membershipItem": "New sponsor",
-        "legacyPaidMessage": "New sponsor",
-        "tickerSponsorItem": "New sponsor",
-        "membershipGiftPurchase": "New sponsor",
-        "sponsorshipsGiftPurchaseAnnouncement": "New sponsor",
-        "giftMembershipReceived": "New sponsor",
-    }
-    DONATE_TYPE_KEYWORDS = (
-        "donation",
-        "superchat",
-        "supersticker",
-        "superthanks",
-        "paidmessage",
-        "paidsticker",
-        "membership",
-        "sponsor",
-        "gift",
-        "purchase",
-    )
-
     def __init__(
         self,
         url: str,
@@ -71,6 +71,55 @@ class YouTubeChatParser:
 
         self.chat: PytchatCore | None = None
         self.video_id = parse_youtube_video_id(url)
+
+    def _normalize_avatar_url(self, url: str | None) -> str | None:
+        avatar_url = str(url or "").strip()
+        if not avatar_url:
+            return None
+
+        avatar_url = re.sub(r"=w\d+-h\d+", "=w32-h32", avatar_url)
+        avatar_url = re.sub(r"=s\d+", "=s32", avatar_url)
+        avatar_url = re.sub(r"=s\d+-c", "=s32-c", avatar_url)
+        if avatar_url.startswith(("http://", "https://")):
+            return avatar_url
+        return None
+
+    def _extract_avatar_url(self, author_details) -> str | None:
+        for attr_name in (
+            "imageUrl",
+            "image_url",
+            "profileImageUrl",
+            "profile_image_url",
+            "photo",
+            "photoUrl",
+            "photo_url",
+        ):
+            avatar_url = self._normalize_avatar_url(
+                getattr(author_details, attr_name, None)
+            )
+            if avatar_url:
+                return avatar_url
+        return None
+
+    def _upgrade_emoji_segments(self, segments):
+        if not segments:
+            return segments
+
+        upgraded = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                upgraded.append(segment)
+                continue
+
+            upgraded_segment = dict(segment)
+            url = str(upgraded_segment.get("url", "") or "")
+            if url:
+                url = re.sub(r"=w\d+-h\d+", "=w128-h128", url)
+                url = re.sub(r"=s\d+", "=s128", url)
+                upgraded_segment["url"] = url
+            upgraded.append(upgraded_segment)
+
+        return upgraded
 
     def _fetch_watch_page(self) -> str:
         if not self.video_id:
@@ -152,14 +201,22 @@ class YouTubeChatParser:
             if not payload["msg"]:
                 continue
 
+            raw_message_text = str(getattr(message, "message", "") or "").strip()
+
             self.on_message(
                 msg_id=message.id,
                 author=getattr(author_details, "name", ""),
                 msg=payload["msg"],
+                msg_ex=(
+                    self._upgrade_emoji_segments(getattr(message, "messageEx", None))
+                    if payload["msg"] == raw_message_text
+                    else None
+                ),
                 is_sponsor=getattr(author_details, "isChatSponsor", False),
                 is_staff=getattr(author_details, "isChatModerator", False),
                 is_owner=getattr(author_details, "isChatOwner", False),
                 is_donate=payload["is_donate"],
+                avatar_url=self._extract_avatar_url(author_details),
             )
 
     def _ensure_stream_is_live(self):
@@ -189,7 +246,7 @@ class YouTubeChatParser:
 
         if message_type == "textMessage":
             return {"msg": message_text, "is_donate": is_donate}
-        elif message_type in self.POLL_TYPES:
+        elif message_type in POLL_TYPES:
             if message_type == "pollOpened":
                 text = _(self.lang, "Poll is opened")
             elif message_type == "pollUpdated":
@@ -199,9 +256,9 @@ class YouTubeChatParser:
             else:
                 text = _(self.lang, "Poll")
         else:
-            label = self.DONATE_TYPE_LABELS.get(message_type)
+            label = DONATE_TYPE_LABELS.get(message_type)
             if label is None and any(
-                keyword in normalized_type for keyword in self.DONATE_TYPE_KEYWORDS
+                keyword in normalized_type for keyword in DONATE_TYPE_KEYWORDS
             ):
                 if "sticker" in normalized_type:
                     label = "Super Sticker"
@@ -262,7 +319,7 @@ class YouTubeChatParser:
         errors = 0
         self.is_connected = True
 
-        while errors < self.MAX_RETRIES and not self.disconnect_signal:
+        while errors < MAX_RETRIES and not self.disconnect_signal:
             try:
                 if not self._has_live_chat():
                     self.on_error(
@@ -306,7 +363,7 @@ class YouTubeChatParser:
 
                 self.on_reconnect()
                 self.on_error(
-                    f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}. {_(self.lang, 'Reconnect')} {errors}/{self.MAX_RETRIES}"
+                    f"{_(self.lang, 'connection_failed')}. {translate_text(error_str, self.lang)}. {_(self.lang, 'Reconnect')} {errors}/{MAX_RETRIES}"
                 )
                 sleep(errors * 2)
 

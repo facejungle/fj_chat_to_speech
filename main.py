@@ -179,6 +179,7 @@ class MainWindow(QMainWindow):
         self.chat_overlay_show = True
         self.chat_overlay = None
         self.chat_overlay_geometry = None
+        self.on_chat_overlay_reset()
         self.chat_overlay_autoscroll = DEFAULTS["chat_overlay_autoscroll"]
         self.chat_overlay_show_avatars = DEFAULTS["chat_overlay_show_avatars"]
         self.chat_overlay_show_sys_msg = DEFAULTS["chat_overlay_show_sys_msg"]

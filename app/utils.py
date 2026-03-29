@@ -327,7 +327,7 @@ def clean_symbol_spam(text: str) -> str:
     if _is_normal_text(_text):
         return _text
 
-    _text_ = _text.replace(" ", "").replace("-", "").replace("_", "").replace(".", "")
+    _text_ = re.sub(r"[\s\-_\.]", "", _text)
     if not _is_normal_text(_text_):
         _text = _text_
 
@@ -478,7 +478,7 @@ def clean_message(
     text = re.sub(r"[^0-9A-Za-zА-Яа-яЁё\s!,-.:?]", " ", text).strip()
 
     if not text:
-        return ""
+        return text
 
     text = re.sub(r"\s+", " ", text)
     if convert_numbers:
@@ -516,7 +516,8 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
 
     text_lower = text.lower()
     text_lower = text.replace("ё", "е")
-    text_words = re.split(r"[\s\-_.,!?:()]+", text_lower)
+    text_lower = clean_symbols(text_lower)
+    text_words = text_lower.split(" ")
     text_words_join = "".join(text_words)
 
     # if any(word in stop_words for word in text_words):
@@ -545,45 +546,39 @@ def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
         return text
 
     normalized_text = text.lower().replace("ё", "е")
+    normalized_text = clean_symbols(normalized_text)
     spans = []
 
-    separators = set(" \t\r\n-_.,!?:()")
-
-    # Match exact words using the same separators as contains_stop_words.
-    for match in re.finditer(r"[^\s\-_.,!?:()]+", text):
+    for match in re.finditer(r"[^\s]+", text):
         word = match.group(0).lower().replace("ё", "е")
         if word in stop_words_set:
             spans.append((match.start(), match.end()))
 
     long_stop_words = [word for word in stop_words_set if len(word) >= 4]
+    if long_stop_words:
+        long_stop_words.sort(key=len, reverse=True)
+        overlap_pattern = re.compile(
+            f"(?=({'|'.join(re.escape(word) for word in long_stop_words)}))"
+        )
 
-    # Match contiguous occurrences in normalized text.
-    for stop_word in long_stop_words:
-        start = 0
-        while True:
-            idx = normalized_text.find(stop_word, start)
-            if idx == -1:
-                break
-            spans.append((idx, idx + len(stop_word)))
-            start = idx + 1
+        for match in overlap_pattern.finditer(normalized_text):
+            found = match.group(1)
+            spans.append((match.start(), match.start() + len(found)))
 
-    # Match occurrences across separators, like in text_words_join.
-    chars = []
-    index_map = []
-    for idx, char in enumerate(normalized_text):
-        if char not in separators:
-            chars.append(char)
-            index_map.append(idx)
-    joined_text = "".join(chars)
+        chars = []
+        index_map = []
+        append_char = chars.append
+        append_index = index_map.append
+        for idx, char in enumerate(normalized_text):
+            if char != " ":
+                append_char(char)
+                append_index(idx)
+        joined_text = "".join(chars)
 
-    for stop_word in long_stop_words:
-        start = 0
-        while True:
-            idx = joined_text.find(stop_word, start)
-            if idx == -1:
-                break
-            spans.append((index_map[idx], index_map[idx + len(stop_word) - 1] + 1))
-            start = idx + 1
+        for match in overlap_pattern.finditer(joined_text):
+            found = match.group(1)
+            start = match.start()
+            spans.append((index_map[start], index_map[start + len(found) - 1] + 1))
 
     if not spans:
         return text
@@ -608,6 +603,16 @@ def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
     result.append(text[last_end:])
 
     return "".join(result)
+
+
+def clean_symbols(text: str):
+    string = ""
+    for ch in text:
+        if ch.isalpha():
+            string += ch
+        else:
+            string += " "
+    return string.strip()
 
 
 def all_letters_is(text: str, lang: str = "en") -> bool:

@@ -52,8 +52,8 @@ HIDDEN_IMPORTS = [
     "scipy",
     "numpy",
     "googletrans",
-    "PIL",
-    "PIL.Image",
+    # "PIL",
+    # "PIL.Image",
     "omegaconf",
     "silero",
     "silero.utils",
@@ -112,7 +112,6 @@ def create_spec_file():
         ("img/system.svg", "img"),
         ("img/twitch.svg", "img"),
         ("img/youtube.svg", "img"),
-        ("spam_filter/banned.txt", "spam_filter"),
         ("spam_filter/ru.txt", "spam_filter"),
         ("spam_filter/en.txt", "spam_filter"),
     ]

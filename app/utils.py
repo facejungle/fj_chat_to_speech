@@ -520,7 +520,6 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
     text_words = text_lower.split(" ")
     text_words_join = "".join(text_words)
 
-    # if any(word in stop_words for word in text_words):
     for word in text_words:
         if word in stop_words:
             return True
@@ -530,9 +529,6 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
             stop_word in text_lower or stop_word in text_words_join
         ):
             return True
-
-    # if any(len(stop_word) >= 4 and stop_word in text_words_join for stop_word in stop_words):
-    #     return True
 
     return False
 
@@ -546,22 +542,23 @@ def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
         return text
 
     normalized_text = text.lower().replace("ё", "е")
-    normalized_text = clean_symbols(normalized_text)
+    cleaned_text = clean_symbols(normalized_text)
     spans = []
 
-    for match in re.finditer(r"[^\s]+", text):
-        word = match.group(0).lower().replace("ё", "е")
+    for match in re.finditer(r"[^\s]+", cleaned_text):
+        word = match.group(0)
         if word in stop_words_set:
             spans.append((match.start(), match.end()))
 
     long_stop_words = [word for word in stop_words_set if len(word) >= 4]
+
     if long_stop_words:
         long_stop_words.sort(key=len, reverse=True)
         overlap_pattern = re.compile(
             f"(?=({'|'.join(re.escape(word) for word in long_stop_words)}))"
         )
 
-        for match in overlap_pattern.finditer(normalized_text):
+        for match in overlap_pattern.finditer(cleaned_text):
             found = match.group(1)
             spans.append((match.start(), match.start() + len(found)))
 
@@ -569,7 +566,7 @@ def clean_stop_words(text: str, stop_words: Iterable[str]) -> str:
         index_map = []
         append_char = chars.append
         append_index = index_map.append
-        for idx, char in enumerate(normalized_text):
+        for idx, char in enumerate(cleaned_text):
             if char != " ":
                 append_char(char)
                 append_index(idx)
@@ -639,6 +636,12 @@ def contain_words_or_nums(text: str, lang: str = "en") -> bool:
     return bool(re.search(r"[^\W_]", value, flags=re.UNICODE))
 
 
+def contrast_color_from_rgb(r, g, b):
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    color = "#000000" if lum > 0.6 else "#ffffff"
+    return color
+
+
 @lru_cache
 def avatar_colors_from_name(name: str):
     """Deterministic avatar background and foreground color from author name."""
@@ -659,9 +662,7 @@ def avatar_colors_from_name(name: str):
     r_i, g_i, b_i = int(r * 255), int(g * 255), int(b * 255)
     bg = f"#{r_i:02x}{g_i:02x}{b_i:02x}"
 
-    # Choose contrasting text color based on luminance
-    lum = 0.299 * r + 0.587 * g + 0.114 * b
-    fg = "#000000" if lum > 0.6 else "#ffffff"
+    fg = contrast_color_from_rgb(r, g, b)
     return bg, fg
 
 

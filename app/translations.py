@@ -219,6 +219,7 @@ TRANSLATIONS = {
         "Transparent messages": "Прозрачные сообщения",
         "Too many timeouts in a row": "Слишком много таймаутов подряд",
         "Too many empty data in a row": "Слишком много пустых данных подряд",
+        "The socket connection was broken": "Сокет соединение было разорвано",
     },
 }
 

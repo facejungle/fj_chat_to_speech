@@ -36,7 +36,7 @@ AVATAR_SIZE = 32
 SPACING = 10
 BUBBLE_PADDING = 10
 HEADER_SPACING = 4
-EMOJI_CACHE_SIZE = 24
+EMOJI_CACHE_SIZE = 32
 NETWORK_TRANSFER_TIMEOUT_MS = 15000
 
 
@@ -339,7 +339,6 @@ def _build_body_document(
     document.setDefaultFont(font)
     document.setDocumentMargin(0)
     document.setTextWidth(width)
-    document.setDefaultStyleSheet(f"body {{ color: {text_color.name()}; }}")
 
     for segment in message.get("segments") or ():
         if isinstance(segment, str):
@@ -354,11 +353,9 @@ def _build_body_document(
             )
 
     document.setHtml(
-        _body_html(
-            message=message,
-            emoji_height=max(16, QFontMetrics(font).height()),
-            view=view,
-        )
+        f'<div style="color: {text_color.name()};">'
+        f"{_body_html(message=message, emoji_height=max(16, QFontMetrics(font).height()), view=view)}"
+        f"</div>"
     )
     return document
 
@@ -541,7 +538,6 @@ class ChatMessageDelegate(QStyledItemDelegate):
         avatar_x = option.rect.x() + OUTER_MARGIN
         bubble_x = avatar_x + self.avatar_size + self.spacing
         bubble_y = item_top
-        text_color = _to_color(message["color"], self.color["WHITE"], self.color)
         bubble_color = _to_color(message["background"], self.color["BLACK"], self.color)
         view = self.parent() if isinstance(self.parent(), QListView) else None
 
@@ -605,7 +601,7 @@ class ChatMessageDelegate(QStyledItemDelegate):
         header_font.setBold(True)
         header_metrics = QFontMetrics(header_font)
         painter.setFont(header_font)
-        painter.setPen(text_color)
+        painter.setPen(self.color["WHITE"])
         icon_size = header_metrics.height()
         header_text_left = text_left
         header_text_width = text_width

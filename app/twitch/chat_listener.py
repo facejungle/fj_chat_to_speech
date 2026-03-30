@@ -54,6 +54,8 @@ SOCKET_BROKEN_ERRORS = frozenset(
     }
 )
 
+_avatar_url_cache: dict[str, str | None] = {}
+
 
 class TwitchChatListener:
     def __init__(
@@ -75,7 +77,7 @@ class TwitchChatListener:
         self.client_id = client_id
         self.access = access
         self.refresh = refresh
-        self.channel = self._parse_channel(channel)
+        self.channel = _parse_channel(channel)
         self.nickname = nickname
         self.on_message = on_message
         self.on_connect = on_connect
@@ -92,108 +94,20 @@ class TwitchChatListener:
         self.last_ping = time()
         self._is_stopping = False
         self.connect_attempt = 0
-        self._avatar_url_cache: dict[str, str | None] = {}
 
-    def _on_expiries_access(self):
-        try:
-            access, refresh = AuthWorker.ensure_valid_access_token(
-                client_id=self.client_id,
-                access_token=self.access,
-                refresh_token=self.refresh,
-                lang=self.lang,
-            )
-            self.access = access
-            self.refresh = refresh
-            self.on_expiries_access(self.access, self.refresh)
-            return True
-        except Exception:
-            return False
+    def disconnect(self):
+        self._is_stopping = True
+        if self.is_connected:
+            self.on_disconnect()
+            self.is_connected = False
+        self._close_socket()
+
+    def run(self):
+        self.listen_thread = Thread(target=self._connect, daemon=True)
+        self.listen_thread.start()
 
     def _send_command(self, command):
         self.sock.send(f"{command}\r\n".encode("utf-8"))
-
-    def _normalize_avatar_url(self, url: str | None) -> str | None:
-        avatar_url = str(url or "").strip()
-        if not avatar_url:
-            return None
-
-        return avatar_url
-
-    def _fetch_avatar_url(self, login: str) -> str | None:
-        login = str(login or "").strip().lower()
-        response = requests.get(
-            "https://api.twitch.tv/helix/users",
-            params={"login": login},
-            headers={
-                "Client-ID": self.client_id,
-                "Authorization": f"Bearer {self.access}",
-            },
-            timeout=10,
-        )
-
-        if response.status_code == 401 and self._on_expiries_access():
-            response = requests.get(
-                "https://api.twitch.tv/helix/users",
-                params={"login": login},
-                headers={
-                    "Client-ID": self.client_id,
-                    "Authorization": f"Bearer {self.access}",
-                },
-                timeout=10,
-            )
-
-        if response.status_code != 200:
-            return None
-
-        payload = response.json()
-        for user in payload.get("data", []):
-            original_url = str(user.get("profile_image_url") or "").strip()
-            return self._normalize_avatar_url(original_url)
-        return None
-
-    def _get_avatar_url(self, username: str) -> str | None:
-        login = str(username or "").strip().lower()
-        if not login:
-            return None
-
-        if login in self._avatar_url_cache:
-            return self._avatar_url_cache[login]
-
-        try:
-            avatar_url = self._fetch_avatar_url(login)
-            self._avatar_url_cache[login] = avatar_url
-            return avatar_url
-        except Exception:
-            self._avatar_url_cache[login] = None
-            return None
-
-    def _recv(self):
-        try:
-            return self.sock.recv(4096).decode("utf-8", errors="ignore")
-        except Exception as e:
-            self.on_error(
-                f"{_(self.lang, 'Error recv data')}. {translate_text(str(e), self.lang)}"
-            )
-
-    def _parse_channel(self, channel_input):
-        if not channel_input:
-            return None
-
-        channel_input = channel_input.strip().lower()
-
-        if channel_input.startswith(("http://", "https://")):
-            parsed = urlparse(channel_input)
-            path = parsed.path.strip("/")
-
-            if "twitch.tv" in parsed.netloc or "twitch.tv" in channel_input:
-                parts = path.split("/")
-                if parts and parts[0]:
-                    return parts[0]
-
-        channel_input = channel_input.lstrip("@#")
-        channel_input = re.sub(r"[^a-zA-Z0-9_]", "", channel_input)
-
-        return channel_input
 
     def _create_socket(self):
         try:
@@ -262,6 +176,7 @@ class TwitchChatListener:
                 # Join to channel
 
                 joined = False
+                join_attempts = 0
 
                 try:
                     self._send_command(f"JOIN #{self.channel}")
@@ -270,28 +185,31 @@ class TwitchChatListener:
 
                 sleep(0.5)
 
-                try:
-                    response = self.sock.recv(4096).decode("utf-8", errors="ignore")
-                except socket.timeout:
-                    self.on_error(
-                        f"{_(self.lang, 'Failed to join to channel')}: {self.channel}"
-                    )
-                    break
+                while not joined and not self._is_stopping and join_attempts < 3:
+                    try:
+                        response = self.sock.recv(4096).decode("utf-8", errors="ignore")
+                    except socket.timeout:
+                        join_attempts += 1
+                        sleep(join_attempts)
+                        pass
 
-                if "authentication failed" in response:
-                    if not self._on_expiries_access():
-                        self.on_error(_(self.lang, "Failed to refresh access token"))
-                        self.disconnect()
-                        return self.on_expiries_refresh()
-                    continue
-                if f"JOIN #{self.channel}" in response:
-                    joined = True
-                if "466" in response:
-                    self.on_error(_(self.lang, "Incorrect nickname format"))
-                    break
-                if "433" in response:
-                    self.on_error(_(self.lang, "The nickname is already in use"))
-                    break
+                    if "authentication failed" in response:
+                        if not self._on_expiries_access():
+                            self.on_error(
+                                _(self.lang, "Failed to refresh access token")
+                            )
+                            self.disconnect()
+                            return self.on_expiries_refresh()
+                        continue
+                    if f"JOIN #{self.channel}" in response:
+                        joined = True
+                        break
+                    if "466" in response:
+                        self.on_error(_(self.lang, "Incorrect nickname format"))
+                        break
+                    if "433" in response:
+                        self.on_error(_(self.lang, "The nickname is already in use"))
+                        break
 
                 if joined:
                     self.on_connect()
@@ -312,160 +230,6 @@ class TwitchChatListener:
                 continue
 
         return self.disconnect()
-
-    def _parse_message(self, line):
-        try:
-            if line.startswith("@"):
-                parts = line.split(" ", 1)
-                if len(parts) < 2:
-                    return None
-
-                tags_str = parts[0][1:]
-                rest = parts[1]
-
-                tag_dict = {}
-                for tag in tags_str.split(";"):
-                    if "=" in tag:
-                        key, value = tag.split("=", 1)
-                        value = (
-                            value.replace("\\s", " ")
-                            .replace("\\:", ";")
-                            .replace("\\\\", "\\")
-                        )
-                        tag_dict[key] = value
-
-                match = re.search(
-                    r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", rest
-                )
-
-                if match:
-                    username = match.group(1)
-                    message = match.group(2)
-
-                    msg_id = tag_dict.get("id")
-                    is_member = tag_dict.get("subscriber") == "1"
-                    is_mod = tag_dict.get("mod") == "1"
-                    is_vip = tag_dict.get("vip") == "1"
-                    badges = tag_dict.get("badges", "")
-
-                    return {
-                        "id": msg_id,
-                        "username": username,
-                        "message": message,
-                        "subscriber": is_member,
-                        "mod": is_mod,
-                        "vip": is_vip,
-                        "badges": badges,
-                        "tags": tag_dict,
-                    }
-
-                if " USERNOTICE " in rest:
-                    notice_message = tag_dict.get("system-msg", "")
-                    trailing_message = ""
-                    split_pos = rest.find(" :")
-                    if split_pos != -1:
-                        trailing_message = rest[split_pos + 2 :]
-                    if trailing_message:
-                        notice_message = (
-                            f"{notice_message}: {trailing_message}"
-                            if notice_message
-                            else trailing_message
-                        )
-
-                    return {
-                        "id": tag_dict.get("id"),
-                        "username": tag_dict.get("display-name")
-                        or tag_dict.get("login")
-                        or "twitch",
-                        "message": notice_message,
-                        "subscriber": tag_dict.get("subscriber") == "1"
-                        or tag_dict.get("msg-id") in DONATION_MSG_IDS,
-                        "mod": tag_dict.get("mod") == "1",
-                        "vip": tag_dict.get("vip") == "1",
-                        "badges": tag_dict.get("badges", ""),
-                        "tags": tag_dict,
-                    }
-            else:
-                match = re.search(
-                    r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", line
-                )
-                if match:
-                    username = match.group(1)
-                    message = match.group(2)
-                    return {
-                        "id": None,
-                        "username": username,
-                        "message": message,
-                        "subscriber": False,
-                        "mod": False,
-                        "vip": False,
-                        "badges": "",
-                        "tags": {},
-                    }
-        except Exception as e:
-            self.on_error(
-                f"{_(self.lang, 'Error parsing message')}. {translate_text(str(e), self.lang)}"
-            )
-
-        return None
-
-    def _parse_emote_segments(self, message: str, tags: dict) -> list | None:
-        emotes = str(tags.get("emotes", "") or "").strip()
-        if not message or not emotes:
-            return None
-
-        ranges = []
-        for emote_group in emotes.split("/"):
-            if not emote_group or ":" not in emote_group:
-                continue
-
-            emote_id, positions = emote_group.split(":", 1)
-            emote_id = emote_id.strip()
-            if not emote_id:
-                continue
-
-            for position in positions.split(","):
-                if "-" not in position:
-                    continue
-                start_str, end_str = position.split("-", 1)
-                try:
-                    start = int(start_str)
-                    end = int(end_str)
-                except ValueError:
-                    continue
-                if start < 0 or end < start or end >= len(message):
-                    continue
-
-                ranges.append((start, end, emote_id))
-
-        if not ranges:
-            return None
-
-        ranges.sort(key=lambda item: item[0])
-        segments = []
-        cursor = 0
-
-        for start, end, emote_id in ranges:
-            if start < cursor:
-                continue
-
-            if start > cursor:
-                segments.append(message[cursor:start])
-
-            emote_text = message[start : end + 1]
-            segments.append(
-                {
-                    "id": emote_id,
-                    "txt": emote_text,
-                    "url": f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/default/dark/3.0",
-                }
-            )
-            cursor = end + 1
-
-        if cursor < len(message):
-            segments.append(message[cursor:])
-
-        return segments or None
 
     def _listen_chat(self):
         timeout_errors = 0
@@ -503,12 +267,20 @@ class TwitchChatListener:
                             f"{_(self.lang, 'error_fetch_messages')}. {_(self.lang, 'Too many empty data in a row')}. {_(self.lang, 'Reconnect')} {self.connect_attempt}/{MAX_RETRIES}"
                         )
                         return
+                    sleep(data_empty)
                     continue
 
                 buffer += data
 
-                while "\r\n" in buffer and not self._is_stopping:
-                    line, buffer = buffer.split("\r\n", 1)
+                if "\r\n" not in buffer:
+                    continue
+
+                lines = buffer.split("\r\n")
+                buffer = lines.pop()
+
+                for line in lines:
+                    if self._is_stopping:
+                        break
 
                     if not line:
                         continue
@@ -521,7 +293,7 @@ class TwitchChatListener:
                         except:
                             pass
 
-                    msg_data = self._parse_message(line)
+                    msg_data = _parse_message(line)
 
                     if msg_data:
                         badges = msg_data.get("badges", "")
@@ -556,14 +328,16 @@ class TwitchChatListener:
                             msg_id=msg_data["id"],
                             author=msg_data["username"],
                             msg=msg_data["message"],
-                            msg_ex=self._parse_emote_segments(
-                                msg_data["message"], tags
-                            ),
+                            msg_ex=_parse_emote_segments(msg_data["message"], tags),
                             is_sponsor=is_sponsor,
                             is_staff=is_staff,
                             is_owner=is_owner,
                             is_donate=is_donate,
-                            avatar_url=self._get_avatar_url(msg_data["username"]),
+                            avatar_url=_get_avatar_url(
+                                msg_data["username"],
+                                client_id=self.client_id,
+                                access_token=self.access,
+                            ),
                         )
 
                 self.connect_attempt = 0
@@ -572,7 +346,21 @@ class TwitchChatListener:
                 sleep(1)
 
             except socket.error as e:
+                if self._is_stopping:
+                    return
+
+                self.connect_attempt += 1
+                self.on_error(
+                    f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}. {_(self.lang, 'Reconnect')} {self.connect_attempt}/{MAX_RETRIES}"
+                )
+
                 if e.errno in SOCKET_BROKEN_ERRORS:
+                    return
+
+                sleep(self.connect_attempt)
+
+            except Exception as e:
+                if self._is_stopping:
                     return
                 self.connect_attempt += 1
                 self.on_error(
@@ -580,20 +368,241 @@ class TwitchChatListener:
                 )
                 sleep(self.connect_attempt)
 
-            except Exception as e:
-                self.connect_attempt += 1
-                self.on_error(
-                    f"{_(self.lang, 'error_fetch_messages')}. {translate_text(str(e), self.lang)}. {_(self.lang, 'Reconnect')} {self.connect_attempt}/{MAX_RETRIES}"
-                )
-                sleep(self.connect_attempt)
+    def _on_expiries_access(self):
+        try:
+            access, refresh = AuthWorker.ensure_valid_access_token(
+                client_id=self.client_id,
+                access_token=self.access,
+                refresh_token=self.refresh,
+                lang=self.lang,
+            )
+            self.access = access
+            self.refresh = refresh
+            self.on_expiries_access(self.access, self.refresh)
+            return True
+        except Exception:
+            return False
 
-    def disconnect(self):
-        self._is_stopping = True
-        if self.is_connected:
-            self.on_disconnect()
-            self.is_connected = False
-        self._close_socket()
 
-    def run(self):
-        self.listen_thread = Thread(target=self._connect, daemon=True)
-        self.listen_thread.start()
+def _parse_message(line):
+    try:
+        if line.startswith("@"):
+            parts = line.split(" ", 1)
+            if len(parts) < 2:
+                return None
+
+            tags_str = parts[0][1:]
+            rest = parts[1]
+
+            tag_dict = {}
+            for tag in tags_str.split(";"):
+                if "=" in tag:
+                    key, value = tag.split("=", 1)
+                    value = (
+                        value.replace("\\s", " ")
+                        .replace("\\:", ";")
+                        .replace("\\\\", "\\")
+                    )
+                    tag_dict[key] = value
+
+            match = re.search(
+                r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", rest
+            )
+
+            if match:
+                username = match.group(1)
+                message = match.group(2)
+
+                msg_id = tag_dict.get("id")
+                is_member = tag_dict.get("subscriber") == "1"
+                is_mod = tag_dict.get("mod") == "1"
+                is_vip = tag_dict.get("vip") == "1"
+                badges = tag_dict.get("badges", "")
+
+                return {
+                    "id": msg_id,
+                    "username": username,
+                    "message": message,
+                    "subscriber": is_member,
+                    "mod": is_mod,
+                    "vip": is_vip,
+                    "badges": badges,
+                    "tags": tag_dict,
+                }
+
+            if " USERNOTICE " in rest:
+                notice_message = tag_dict.get("system-msg", "")
+                trailing_message = ""
+                split_pos = rest.find(" :")
+                if split_pos != -1:
+                    trailing_message = rest[split_pos + 2 :]
+                if trailing_message:
+                    notice_message = (
+                        f"{notice_message}: {trailing_message}"
+                        if notice_message
+                        else trailing_message
+                    )
+
+                return {
+                    "id": tag_dict.get("id"),
+                    "username": tag_dict.get("display-name")
+                    or tag_dict.get("login")
+                    or "twitch",
+                    "message": notice_message,
+                    "subscriber": tag_dict.get("subscriber") == "1"
+                    or tag_dict.get("msg-id") in DONATION_MSG_IDS,
+                    "mod": tag_dict.get("mod") == "1",
+                    "vip": tag_dict.get("vip") == "1",
+                    "badges": tag_dict.get("badges", ""),
+                    "tags": tag_dict,
+                }
+        else:
+            match = re.search(
+                r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", line
+            )
+            if match:
+                username = match.group(1)
+                message = match.group(2)
+                return {
+                    "id": None,
+                    "username": username,
+                    "message": message,
+                    "subscriber": False,
+                    "mod": False,
+                    "vip": False,
+                    "badges": "",
+                    "tags": {},
+                }
+    except Exception as e:
+        self.on_error(
+            f"{_(self.lang, 'Error parsing message')}. {translate_text(str(e), self.lang)}"
+        )
+
+    return None
+
+
+def _parse_channel(channel_input):
+    if not channel_input:
+        return None
+
+    channel_input = channel_input.strip().lower()
+
+    if channel_input.startswith(("http://", "https://")):
+        parsed = urlparse(channel_input)
+        path = parsed.path.strip("/")
+
+        if "twitch.tv" in parsed.netloc or "twitch.tv" in channel_input:
+            parts = path.split("/")
+            if parts and parts[0]:
+                return parts[0]
+
+    channel_input = channel_input.lstrip("@#")
+    channel_input = re.sub(r"[^a-zA-Z0-9_]", "", channel_input)
+
+    return channel_input
+
+
+def _normalize_avatar_url(url: str | None) -> str | None:
+    avatar_url = str(url or "").strip()
+    if not avatar_url:
+        return None
+
+    return avatar_url
+
+
+def _fetch_avatar_url(login: str, client_id: str, access_token: str) -> str | None:
+    login = str(login or "").strip().lower()
+    response = requests.get(
+        "https://api.twitch.tv/helix/users",
+        params={"login": login},
+        headers={
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {access_token}",
+        },
+        timeout=10,
+    )
+
+    if response.status_code != 200:
+        return None
+
+    payload = response.json()
+    for user in payload.get("data", []):
+        original_url = str(user.get("profile_image_url") or "").strip()
+        return _normalize_avatar_url(original_url)
+    return None
+
+
+def _get_avatar_url(username: str, client_id: str, access_token: str) -> str | None:
+    login = str(username or "").strip().lower()
+    if not login:
+        return None
+
+    if login in _avatar_url_cache:
+        return _avatar_url_cache[login]
+
+    try:
+        avatar_url = _fetch_avatar_url(login, client_id, access_token)
+        _avatar_url_cache[login] = avatar_url
+        return avatar_url
+    except Exception:
+        _avatar_url_cache[login] = None
+        return None
+
+
+def _parse_emote_segments(message: str, tags: dict) -> list | None:
+    emotes = str(tags.get("emotes", "") or "").strip()
+    if not message or not emotes:
+        return None
+
+    ranges = []
+    for emote_group in emotes.split("/"):
+        if not emote_group or ":" not in emote_group:
+            continue
+
+        emote_id, positions = emote_group.split(":", 1)
+        emote_id = emote_id.strip()
+        if not emote_id:
+            continue
+
+        for position in positions.split(","):
+            if "-" not in position:
+                continue
+            start_str, end_str = position.split("-", 1)
+            try:
+                start = int(start_str)
+                end = int(end_str)
+            except ValueError:
+                continue
+            if start < 0 or end < start or end >= len(message):
+                continue
+
+            ranges.append((start, end, emote_id))
+
+    if not ranges:
+        return None
+
+    ranges.sort(key=lambda item: item[0])
+    segments = []
+    cursor = 0
+
+    for start, end, emote_id in ranges:
+        if start < cursor:
+            continue
+
+        if start > cursor:
+            segments.append(message[cursor:start])
+
+        emote_text = message[start : end + 1]
+        segments.append(
+            {
+                "id": emote_id,
+                "txt": emote_text,
+                "url": f"https://static-cdn.jtvnw.net/emoticons/v2/{emote_id}/default/dark/3.0",
+            }
+        )
+        cursor = end + 1
+
+    if cursor < len(message):
+        segments.append(message[cursor:])
+
+    return segments or None

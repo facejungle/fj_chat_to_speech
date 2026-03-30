@@ -2,7 +2,6 @@ import csv
 from logging import DEBUG, Formatter, Logger, StreamHandler
 import os
 from random import randint
-import re
 import sys
 from collections import defaultdict, deque
 from queue import Empty, Full, Queue
@@ -13,7 +12,7 @@ import html
 import threading
 from time import sleep
 import hashlib
-from typing import TypedDict
+from typing import Iterable, TypedDict
 
 import sounddevice as sd
 from PyQt6.QtWidgets import (
@@ -179,15 +178,17 @@ class MainWindow(QMainWindow):
         self.chat_overlay_show = True
         self.chat_overlay = None
         self.chat_overlay_geometry = None
-        self.on_chat_overlay_reset()
         self.chat_overlay_autoscroll = DEFAULTS["chat_overlay_autoscroll"]
         self.chat_overlay_show_avatars = DEFAULTS["chat_overlay_show_avatars"]
         self.chat_overlay_show_sys_msg = DEFAULTS["chat_overlay_show_sys_msg"]
         self.chat_overlay_clr_stop_words = DEFAULTS["chat_overlay_clr_stop_words"]
-        self.chat_overlay_always_on_top = DEFAULTS["chat_window_always_on_top"]
+        self.chat_overlay_always_on_top = DEFAULTS["chat_overlay_always_on_top"]
         self.chat_overlay_is_transparent = DEFAULTS["chat_overlay_is_transparent"]
 
         # Connections
+        self._connection_token_seq = 0
+        self._active_connection_tokens = {"youtube": None, "twitch": None}
+
         self.youtube = None
         self.yt_credentials = None
         self.yt_is_connected = False
@@ -212,8 +213,6 @@ class MainWindow(QMainWindow):
         self.stats_lock = threading.Lock()
         self.message_workers = min(4, max(2, os.cpu_count() or 2))
         self._cache_clear_in_progress = False
-        self._connection_token_seq = 0
-        self._active_connection_tokens = {"youtube": None, "twitch": None}
 
         self.load_settings()
 
@@ -223,10 +222,22 @@ class MainWindow(QMainWindow):
         self.setup_ui()
 
         self.detox_model = None
-        self.model = None
+        self.silero_model = None
         self.model_lock = threading.Lock()
 
         QTimer.singleShot(0, self.start_background_services)
+
+    def closeEvent(self, event):
+        if self.chat_overlay is not None:
+            self.chat_overlay.close()
+        if self.twitch:
+            self.on_disconnect_twitch()
+        if self.youtube:
+            self.on_disconnect_yt()
+
+        self.save_settings()
+        sd.stop()
+        super().closeEvent(event)
 
     def start_background_services(self):
         threading.Thread(target=self.process_audio_loop, daemon=True).start()
@@ -704,7 +715,7 @@ class MainWindow(QMainWindow):
         if self.voice_language != lang:
             self.voice_language = lang
             with self.model_lock:
-                self.model = None
+                self.silero_model = None
             threading.Thread(
                 target=lambda: self.init_silero(self.voice_language), daemon=True
             ).start()
@@ -1049,7 +1060,7 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            if not self.model:
+            if not self.silero_model:
                 res = QMessageBox.question(
                     self,
                     _(self.language, "Silero not loaded"),
@@ -1574,7 +1585,7 @@ class MainWindow(QMainWindow):
         self.chat_overlay_show_avatars = DEFAULTS["chat_overlay_show_avatars"]
         self.chat_overlay_show_sys_msg = DEFAULTS["chat_overlay_show_sys_msg"]
         self.chat_overlay_clr_stop_words = DEFAULTS["chat_overlay_clr_stop_words"]
-        self.chat_window_always_on_top = DEFAULTS["chat_window_always_on_top"]
+        self.chat_overlay_always_on_top = DEFAULTS["chat_overlay_always_on_top"]
 
         self.yt_credentials = None
         self.twitch_credentials = twitch_default_credentials
@@ -2003,12 +2014,12 @@ class MainWindow(QMainWindow):
             "buffer_maxsize": self.buffer_maxsize,
             "yt_credentials": self.yt_credentials,
             "twitch_credentials": self.twitch_credentials,
-            "chat_window_geometry": self.chat_overlay_geometry,
+            "chat_overlay_geometry": self.chat_overlay_geometry,
             "chat_overlay_autoscroll": self.chat_overlay_autoscroll,
             "chat_overlay_show_avatars": self.chat_overlay_show_avatars,
             "chat_overlay_show_sys_msg": self.chat_overlay_show_sys_msg,
             "chat_overlay_clr_stop_words": self.chat_overlay_clr_stop_words,
-            "chat_window_always_on_top": self.chat_overlay_always_on_top,
+            "chat_overlay_always_on_top": self.chat_overlay_always_on_top,
             "chat_overlay_is_transparent": self.chat_overlay_is_transparent,
         }
         with open(get_settings_path(), "w", encoding="utf-8") as f:
@@ -2072,15 +2083,18 @@ class MainWindow(QMainWindow):
                 "chat_overlay_clr_stop_words", self.chat_overlay_clr_stop_words
             )
             self.chat_overlay_always_on_top = settings.get(
-                "chat_window_always_on_top", self.chat_overlay_always_on_top
+                "chat_overlay_always_on_top", self.chat_overlay_always_on_top
             )
             self.chat_overlay_is_transparent = settings.get(
                 "chat_overlay_is_transparent", self.chat_overlay_is_transparent
             )
 
             self.chat_overlay_geometry = settings.get(
-                "chat_window_geometry", self.chat_overlay_geometry
+                "chat_overlay_geometry", self.chat_overlay_geometry
             )
+
+            if not isinstance(self.chat_overlay_geometry, Iterable):
+                self.on_chat_overlay_reset()
 
             if not isinstance(self.twitch_credentials, dict):
                 self.twitch_credentials = twitch_default_credentials
@@ -2110,13 +2124,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             pass
         return set()
-
-    def closeEvent(self, event):
-        if self.chat_overlay is not None:
-            self.chat_overlay.close()
-        self.save_settings()
-        sd.stop()
-        super().closeEvent(event)
 
     def init_detoxify(self):
         attempt = 0
@@ -2199,7 +2206,7 @@ class MainWindow(QMainWindow):
         error_text = None
         hub = get_torch_hub()
 
-        while attempt < 5 and not self.model:
+        while attempt < 5 and not self.silero_model:
             if attempt > 0:
                 self.add_sys_message(
                     author="Silero",
@@ -2213,7 +2220,7 @@ class MainWindow(QMainWindow):
             try:
                 with self.model_lock:
                     # if voice_language == self.voice_language:
-                    if self.model and getattr(self.model, "apply_tts"):
+                    if self.silero_model and getattr(self.silero_model, "apply_tts"):
                         pass
                     else:
                         configure_torch_hub_cache()
@@ -2221,7 +2228,7 @@ class MainWindow(QMainWindow):
                         if getattr(sys, "frozen", False):
                             cached_repo = find_cached_silero_repo()
                             if cached_repo:
-                                self.model, txt = hub.load(
+                                self.silero_model, txt = hub.load(
                                     repo_or_dir=cached_repo,
                                     source="local",
                                     model="silero_tts",
@@ -2232,7 +2239,7 @@ class MainWindow(QMainWindow):
                                     verbose=False,
                                 )
                             else:
-                                self.model, txt = hub.load(
+                                self.silero_model, txt = hub.load(
                                     repo_or_dir="snakers4/silero-models",
                                     source="github",
                                     model="silero_tts",
@@ -2243,7 +2250,7 @@ class MainWindow(QMainWindow):
                                     verbose=False,
                                 )
                         else:
-                            self.model, txt = hub.load(
+                            self.silero_model, txt = hub.load(
                                 repo_or_dir="snakers4/silero-models",
                                 source="github",
                                 model="silero_tts",
@@ -2265,7 +2272,7 @@ class MainWindow(QMainWindow):
                     clear_cache_silero()
 
         else:
-            if self.model and getattr(self.model, "apply_tts"):
+            if self.silero_model and getattr(self.silero_model, "apply_tts"):
                 self.add_sys_message(
                     author="Silero",
                     text=_(self.language, "silero_loaded"),
@@ -2286,23 +2293,15 @@ class MainWindow(QMainWindow):
         self,
         platform: str,
         author: str,
-        message: str,
         reason: str,
         is_staff=False,
         is_owner=False,
         severity=1.0,
     ):
         platform_author = f"{platform}:{author}"
-        self.add_message(
-            platform=platform,
-            author=author,
-            text=f"[{_(self.language, reason)} {severity:.2f}] {message}",
-            color="gray",
-        )
         should_save_banned_list = False
         with self.stats_lock:
             self.messages_stats["filtered_count"] += 1
-        self.on_change_stats()
 
         if is_staff is False and is_owner is False:
             with self.message_state_lock:
@@ -2310,13 +2309,31 @@ class MainWindow(QMainWindow):
                 if self.toxic_dict[platform_author] > self.ban_limit:
                     self.banned_set.add(platform_author)
                     should_save_banned_list = True
+
+            system_author = _(self.voice_language, "System")
+            self.add_message(
+                platform=platform,
+                author=system_author,
+                text=f"[{_(self.language, reason)}][{float(self.toxic_dict[platform_author]):.2f}/{self.ban_limit}] {author}",
+                color=MSG_STATUS_COLOR["warning"],
+            )
+
             if should_save_banned_list:
+                ban_text = f"[{_(self.language, 'Banned')}] {platform_author}"
                 self.add_sys_message(
-                    author=platform,
-                    text=f"[{_(self.language, 'Banned')}] {author}",
+                    author=system_author,
+                    text=ban_text,
                     status="warning",
                 )
+                self.add_message(
+                    platform=platform,
+                    author=system_author,
+                    text=ban_text,
+                    color=MSG_STATUS_COLOR["error"],
+                )
                 self.save_banned_list()
+
+        self.on_change_stats()
 
     def calc_toxicity(self, text):
         if self.detox_model and getattr(self.detox_model, "predict"):
@@ -2359,6 +2376,9 @@ class MainWindow(QMainWindow):
         if is_processed:
             return
 
+        if is_banned:
+            return
+
         is_transliterated = False
         is_stop_words_cleaned = False
         cleaned_text = str(message)
@@ -2389,15 +2409,6 @@ class MainWindow(QMainWindow):
                 is_donate=is_donate,
             ),
         )
-
-        if is_banned:
-            self.add_message(
-                platform=platform,
-                author=cleaned_author,
-                text=f"[{_(self.language, 'Banned')}] {cleaned_text}",
-                color="gray",
-            )
-            return
 
         cleaned_text = clean_links(cleaned_text, lang=self.voice_language)
         cleaned_text = clean_emoji(cleaned_text)
@@ -2436,11 +2447,10 @@ class MainWindow(QMainWindow):
         if toxic_val:
             detox_key = max(toxic_val, key=toxic_val.get)
             detox_value = toxic_val[detox_key]
-            if detox_value > self.toxic_sense:
+            if detox_value >= self.toxic_sense:
                 self.process_toxic_message(
                     platform=platform,
                     author=cleaned_author,
-                    message=cleaned_text,
                     reason=str(detox_key).replace("_", " ").capitalize(),
                     is_staff=is_staff,
                     is_owner=is_owner,
@@ -2536,7 +2546,9 @@ class MainWindow(QMainWindow):
         """Convert text to speech using Silero"""
         logger.debug("text_to_speech(): %s", text)
         try:
-            if self.model is not None and getattr(self.model, "apply_tts"):
+            if self.silero_model is not None and getattr(
+                self.silero_model, "apply_tts"
+            ):
                 with self.model_lock:
                     no_grad = torch_no_grad()
                     with no_grad():
@@ -2557,7 +2569,7 @@ class MainWindow(QMainWindow):
                             num = randint(0, len(available_voices) - 1)
                             selected_voice = available_voices[num]
 
-                        return self.model.apply_tts(
+                        return self.silero_model.apply_tts(
                             ssml_text=text,
                             speaker=selected_voice,
                             sample_rate=SAMPLE_RATE,

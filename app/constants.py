@@ -70,6 +70,8 @@ DEFAULTS = {
     "chat_overlay_is_transparent": True,
 }
 
+PLATFORM = platform.system()
+IS_PLATFORM_WIN = bool(PLATFORM == "Windows")
 
 PLATFORM_ICON = (
     {
@@ -77,10 +79,14 @@ PLATFORM_ICON = (
         "twitch": "img\\twitch.svg",
         "youtube": "img\\youtube.svg",
     }
-    if platform.system() == "Windows"
+    if IS_PLATFORM_WIN
     else {
         "system": "img/system.svg",
         "twitch": "img/twitch.svg",
         "youtube": "img/youtube.svg",
     }
 )
+
+NATIVE_RELEASE_DIR = "native/release/"
+GAME_OVERLAY_EXE = "fj_chat_overlay.exe"
+GAME_OVERLAY_DLL = "fj_chat_overlay_lib.dll"

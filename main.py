@@ -11,7 +11,6 @@ import json
 import html
 import threading
 from time import sleep
-import hashlib
 from typing import Iterable, TypedDict
 
 import sounddevice as sd
@@ -36,6 +35,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from PyQt6.QtCore import (
+    QProcess,
     Qt,
     QTimer,
     QFile,
@@ -174,6 +174,8 @@ class MainWindow(QMainWindow):
         self.stop_words = tuple()
         self.is_paused = False
 
+        self.chat_model = ChatMessageListModel()
+
         # Chat overlay
         self.chat_overlay_show = True
         self.chat_overlay = None
@@ -184,6 +186,19 @@ class MainWindow(QMainWindow):
         self.chat_overlay_clr_stop_words = DEFAULTS["chat_overlay_clr_stop_words"]
         self.chat_overlay_always_on_top = DEFAULTS["chat_overlay_always_on_top"]
         self.chat_overlay_is_transparent = DEFAULTS["chat_overlay_is_transparent"]
+
+        # Game overlay
+        # self.game_overlay_show = False
+        # self.game_overlay_bridge = (
+        #     GameOverlayBridge(
+        #         chat_model=self.chat_model,
+        #         font_size=self.font_size,
+        #         show_avatars=self.chat_overlay_show_avatars,
+        #         show_sys_msg=self.chat_overlay_show_sys_msg,
+        #     )
+        #     if IS_PLATFORM_WIN
+        #     else None
+        # )
 
         # Connections
         self._connection_token_seq = 0
@@ -228,12 +243,15 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.start_background_services)
 
     def closeEvent(self, event):
-        if self.chat_overlay is not None:
-            self.chat_overlay.close()
         if self.twitch:
             self.on_disconnect_twitch()
         if self.youtube:
             self.on_disconnect_yt()
+        if self.chat_overlay is not None:
+            self.chat_overlay.close()
+
+        # if self.game_overlay_bridge:
+        #     self.game_overlay_bridge.set_enabled(False)
 
         self.save_settings()
         sd.stop()
@@ -271,69 +289,18 @@ class MainWindow(QMainWindow):
         self.setup_language_menu(menu_bar)
         self.voice_menu = menu_bar.addMenu(_(self.language, "Speech Settings"))
         self.setup_voice_menu()
+        self.setup_chat_overlay_menu(menu_bar)
 
-        chat_overlay_menu = menu_bar.addMenu(_(self.language, "Chat settings"))
+        # if IS_PLATFORM_WIN:
+        #     game_overlay_menu = menu_bar.addMenu(_(self.language, "Game overlay"))
 
-        self.show_chat_overlay_action = QAction(
-            _(self.language, "Show chat"), chat_overlay_menu
-        )
-        self.show_chat_overlay_action.setCheckable(True)
-        self.show_chat_overlay_action.setChecked(self.chat_overlay_show)
-        self.show_chat_overlay_action.triggered.connect(self.toggle_show_chat_overlay)
-        self.show_chat_overlay_action.setShortcut(QKeySequence("F12"))
-        chat_overlay_menu.addAction(self.show_chat_overlay_action)
-
-        clear_stop_words_action = QAction(
-            _(self.language, "Clear stop-words"), chat_overlay_menu
-        )
-        clear_stop_words_action.setCheckable(True)
-        clear_stop_words_action.setChecked(self.chat_overlay_clr_stop_words)
-        clear_stop_words_action.triggered.connect(self.on_chat_overlay_clr_stop_words)
-        chat_overlay_menu.addAction(clear_stop_words_action)
-
-        show_avatars_action = QAction(
-            _(self.language, "Show avatars"), chat_overlay_menu
-        )
-        show_avatars_action.setCheckable(True)
-        show_avatars_action.setChecked(self.chat_overlay_show_avatars)
-        show_avatars_action.triggered.connect(self.on_chat_overlay_show_avatars)
-        chat_overlay_menu.addAction(show_avatars_action)
-
-        show_system_messages_action = QAction(
-            _(self.language, "Show system messages"), chat_overlay_menu
-        )
-        show_system_messages_action.setCheckable(True)
-        show_system_messages_action.setChecked(self.chat_overlay_show_sys_msg)
-        show_system_messages_action.triggered.connect(self.on_chat_overlay_show_sys_msg)
-        chat_overlay_menu.addAction(show_system_messages_action)
-
-        auto_scroll_action = QAction(_(self.language, "Auto-scroll"), chat_overlay_menu)
-        auto_scroll_action.setCheckable(True)
-        auto_scroll_action.setChecked(self.chat_overlay_autoscroll)
-        auto_scroll_action.triggered.connect(self.on_chat_overlay_autoscroll)
-        chat_overlay_menu.addAction(auto_scroll_action)
-
-        is_transparent_action = QAction(
-            _(self.language, "Transparent messages"), chat_overlay_menu
-        )
-        is_transparent_action.setCheckable(True)
-        is_transparent_action.setChecked(self.chat_overlay_is_transparent)
-        is_transparent_action.triggered.connect(self.on_chat_overlay_is_transparent)
-        chat_overlay_menu.addAction(is_transparent_action)
-
-        chat_overlay_menu.addSeparator()
-
-        chat_overlay_clr_action = QAction(
-            _(self.language, "Clear chat"), chat_overlay_menu
-        )
-        chat_overlay_clr_action.triggered.connect(self.on_chat_overlay_clear)
-        chat_overlay_menu.addAction(chat_overlay_clr_action)
-
-        reset_chat_overlay_action = QAction(
-            _(self.language, "Reset position"), chat_overlay_menu
-        )
-        reset_chat_overlay_action.triggered.connect(self.on_chat_overlay_reset)
-        chat_overlay_menu.addAction(reset_chat_overlay_action)
+        #     show_game_overlay_action = QAction(
+        #         _(self.language, "Show chat"), game_overlay_menu
+        #     )
+        #     show_game_overlay_action.setCheckable(True)
+        #     show_game_overlay_action.setChecked(self.game_overlay_show)
+        #     show_game_overlay_action.triggered.connect(self.toggle_show_game_overlay)
+        #     game_overlay_menu.addAction(show_game_overlay_action)
 
     def setup_file_menu(self, menu_bar):
         file_menu = menu_bar.addMenu(_(self.language, "File"))
@@ -448,6 +415,70 @@ class MainWindow(QMainWindow):
         auto_translate_action.triggered.connect(self.toggle_auto_translate)
         self.voice_menu.addAction(auto_translate_action)
 
+    def setup_chat_overlay_menu(self, menu_bar):
+        chat_overlay_menu = menu_bar.addMenu(_(self.language, "Chat settings"))
+
+        self.show_chat_overlay_action = QAction(
+            _(self.language, "Show chat"), chat_overlay_menu
+        )
+        self.show_chat_overlay_action.setCheckable(True)
+        self.show_chat_overlay_action.setChecked(self.chat_overlay_show)
+        self.show_chat_overlay_action.triggered.connect(self.toggle_show_chat_overlay)
+        self.show_chat_overlay_action.setShortcut(QKeySequence("F12"))
+        chat_overlay_menu.addAction(self.show_chat_overlay_action)
+
+        clear_stop_words_action = QAction(
+            _(self.language, "Clear stop-words"), chat_overlay_menu
+        )
+        clear_stop_words_action.setCheckable(True)
+        clear_stop_words_action.setChecked(self.chat_overlay_clr_stop_words)
+        clear_stop_words_action.triggered.connect(self.on_chat_overlay_clr_stop_words)
+        chat_overlay_menu.addAction(clear_stop_words_action)
+
+        show_avatars_action = QAction(
+            _(self.language, "Show avatars"), chat_overlay_menu
+        )
+        show_avatars_action.setCheckable(True)
+        show_avatars_action.setChecked(self.chat_overlay_show_avatars)
+        show_avatars_action.triggered.connect(self.on_chat_overlay_show_avatars)
+        chat_overlay_menu.addAction(show_avatars_action)
+
+        show_system_messages_action = QAction(
+            _(self.language, "Show system messages"), chat_overlay_menu
+        )
+        show_system_messages_action.setCheckable(True)
+        show_system_messages_action.setChecked(self.chat_overlay_show_sys_msg)
+        show_system_messages_action.triggered.connect(self.on_chat_overlay_show_sys_msg)
+        chat_overlay_menu.addAction(show_system_messages_action)
+
+        auto_scroll_action = QAction(_(self.language, "Auto-scroll"), chat_overlay_menu)
+        auto_scroll_action.setCheckable(True)
+        auto_scroll_action.setChecked(self.chat_overlay_autoscroll)
+        auto_scroll_action.triggered.connect(self.on_chat_overlay_autoscroll)
+        chat_overlay_menu.addAction(auto_scroll_action)
+
+        is_transparent_action = QAction(
+            _(self.language, "Transparent messages"), chat_overlay_menu
+        )
+        is_transparent_action.setCheckable(True)
+        is_transparent_action.setChecked(self.chat_overlay_is_transparent)
+        is_transparent_action.triggered.connect(self.on_chat_overlay_is_transparent)
+        chat_overlay_menu.addAction(is_transparent_action)
+
+        chat_overlay_menu.addSeparator()
+
+        chat_overlay_clr_action = QAction(
+            _(self.language, "Clear chat"), chat_overlay_menu
+        )
+        chat_overlay_clr_action.triggered.connect(self.on_chat_overlay_clear)
+        chat_overlay_menu.addAction(chat_overlay_clr_action)
+
+        reset_chat_overlay_action = QAction(
+            _(self.language, "Reset position"), chat_overlay_menu
+        )
+        reset_chat_overlay_action.triggered.connect(self.on_chat_overlay_reset)
+        chat_overlay_menu.addAction(reset_chat_overlay_action)
+
     def setup_connections_grid(self):
         connections_grid = QGridLayout()
         self.connections_widget = QWidget()
@@ -559,7 +590,6 @@ class MainWindow(QMainWindow):
 
         self.msg_box = MessageWidget(font_size=self.font_size)
         self.root_layout.addWidget(self.msg_box)
-        self.chat_model = ChatMessageListModel()
 
         # Timer to flush messages added from background threads
         self._flush_timer = QTimer(self)
@@ -1870,6 +1900,10 @@ class MainWindow(QMainWindow):
                 3000,
             )
 
+    # def toggle_show_game_overlay(self, checked):
+    #     self.game_overlay_show = checked
+    #     self.game_overlay_bridge.set_enabled(checked)
+
     # === Helper methods ===
 
     def stats_text(self):
@@ -2186,108 +2220,99 @@ class MainWindow(QMainWindow):
                     status="error",
                 )
 
+        if self.detox_model and getattr(self.detox_model, "predict"):
+            self.add_sys_message(
+                author="Detoxify",
+                text=_(self.language, "detoxify_loaded"),
+                status="success",
+            )
         else:
-            if self.detox_model and getattr(self.detox_model, "predict"):
-                self.add_sys_message(
-                    author="Detoxify",
-                    text=_(self.language, "detoxify_loaded"),
-                    status="success",
-                )
-            else:
-                self.add_sys_message(
-                    author="Detoxify",
-                    text=f"{_(self.language, 'detoxify_loading_failed')}. {error_text if error_text else ""}",
-                    status="error",
-                )
+            self.add_sys_message(
+                author="Detoxify",
+                text=f"{_(self.language, 'detoxify_loading_failed')}. {error_text if error_text else ""}",
+                status="error",
+            )
 
     def init_silero(self, voice_language):
         self._run_on_ui_thread(self.voice_menu.setDisabled, True)
         attempt = 0
         error_text = None
         hub = get_torch_hub()
+        configure_torch_hub_cache()
 
-        while attempt < 5 and not self.silero_model:
-            if attempt > 0:
-                self.add_sys_message(
-                    author="Silero",
-                    text=_(self.language, "silero_loading") + f" {attempt}/5",
-                )
-            else:
-                self.add_sys_message(
-                    author="Silero", text=_(self.language, "silero_loading")
-                )
+        with self.model_lock:
+            self.silero_model = None
 
-            try:
-                with self.model_lock:
-                    # if voice_language == self.voice_language:
-                    if self.silero_model and getattr(self.silero_model, "apply_tts"):
-                        pass
+            self.add_sys_message(
+                author="Silero", text=_(self.language, "silero_loading")
+            )
+
+            while attempt < 5 and not self.silero_model:
+                try:
+                    cached_repo = find_cached_silero_repo()
+                    if cached_repo:
+                        self.silero_model, txt = hub.load(
+                            repo_or_dir=cached_repo,
+                            source="local",
+                            model="silero_tts",
+                            language=voice_language,
+                            speaker=MODELS[voice_language],
+                            trust_repo=True,
+                            force_reload=False,
+                            verbose=False,
+                        )
                     else:
-                        configure_torch_hub_cache()
+                        self.silero_model, txt = hub.load(
+                            repo_or_dir="snakers4/silero-models",
+                            source="github",
+                            model="silero_tts",
+                            language=voice_language,
+                            speaker=MODELS[voice_language],
+                            trust_repo=True,
+                            force_reload=attempt > 0,
+                            verbose=False,
+                        )
 
-                        if getattr(sys, "frozen", False):
-                            cached_repo = find_cached_silero_repo()
-                            if cached_repo:
-                                self.silero_model, txt = hub.load(
-                                    repo_or_dir=cached_repo,
-                                    source="local",
-                                    model="silero_tts",
-                                    language=voice_language,
-                                    speaker=MODELS[voice_language],
-                                    trust_repo=True,
-                                    force_reload=False,
-                                    verbose=False,
-                                )
-                            else:
-                                self.silero_model, txt = hub.load(
-                                    repo_or_dir="snakers4/silero-models",
-                                    source="github",
-                                    model="silero_tts",
-                                    language=voice_language,
-                                    speaker=MODELS[voice_language],
-                                    trust_repo=True,
-                                    force_reload=attempt > 0,
-                                    verbose=False,
-                                )
-                        else:
-                            self.silero_model, txt = hub.load(
-                                repo_or_dir="snakers4/silero-models",
-                                source="github",
-                                model="silero_tts",
-                                language=voice_language,
-                                speaker=MODELS[voice_language],
-                                trust_repo=True,
-                                force_reload=attempt > 0,
-                                verbose=False,
-                            )
+                except Exception as e:
+                    attempt += 1
+                    error_text = str(e)
+                    self.silero_model = None
 
-            except Exception as e:
-                attempt += 1
-                error_text = str(e)
+                    self.add_sys_message(
+                        author="Silero",
+                        text=_(self.language, "silero_loading") + f" {attempt}/5",
+                    )
+                    logger.error(error_text)
 
-                if (
-                    "Speaker not in the supported list" in error_text
-                    or "failed reading zip archive" in error_text
-                ):
-                    clear_cache_silero()
+                    if "WinError 32" in error_text:
+                        self._run_on_ui_thread(self.restart_app)
 
+                    try:
+                        if "Speaker not in the supported list" in error_text:
+                            clear_cache_silero()
+                        elif "failed reading zip archive" in error_text:
+                            clear_cache_silero(MODELS[voice_language])
+                    except Exception:
+                        pass
+
+        if self.silero_model and getattr(self.silero_model, "apply_tts"):
+            self.add_sys_message(
+                author="Silero",
+                text=_(self.language, "silero_loaded"),
+                status="success",
+            )
         else:
-            if self.silero_model and getattr(self.silero_model, "apply_tts"):
-                self.add_sys_message(
-                    author="Silero",
-                    text=_(self.language, "silero_loaded"),
-                    status="success",
-                )
-            else:
-                self.add_sys_message(
-                    author="Silero",
-                    text=f"{_(self.language, 'silero_failed')}. {translate_text(error_text, self.language) if error_text else ""}",
-                    status="error",
-                )
+            self.add_sys_message(
+                author="Silero",
+                text=f"{_(self.language, 'silero_failed')}. {translate_text(error_text, self.language) if error_text else ""}",
+                status="error",
+            )
         self._run_on_ui_thread(self.voice_menu.setDisabled, False)
 
-    def get_msg_hash(self, platform, author, message):
-        return hashlib.md5(f"{platform}:{author}:{message}".encode()).hexdigest()
+    def restart_app(self):
+        self.save_settings()
+        QProcess.startDetached(sys.executable, sys.argv)
+        QApplication.quit()
 
     def process_toxic_message(
         self,
@@ -2569,13 +2594,24 @@ class MainWindow(QMainWindow):
                             num = randint(0, len(available_voices) - 1)
                             selected_voice = available_voices[num]
 
-                        return self.silero_model.apply_tts(
-                            ssml_text=text,
-                            speaker=selected_voice,
-                            sample_rate=SAMPLE_RATE,
-                            put_accent=self.add_accents,
-                            put_yo=True,
-                        )
+                        if self.voice_language == "ru":
+                            return self.silero_model.apply_tts(
+                                ssml_text=text,
+                                speaker=selected_voice,
+                                sample_rate=SAMPLE_RATE,
+                                put_accent=self.add_accents,
+                                put_yo=True,
+                                put_stress_homo=True,
+                                put_yo_homo=True,
+                            )
+                        else:
+                            return self.silero_model.apply_tts(
+                                ssml_text=text,
+                                speaker=selected_voice,
+                                sample_rate=SAMPLE_RATE,
+                                put_accent=self.add_accents,
+                            )
+
             else:
                 self.add_sys_message(
                     author="Silero",

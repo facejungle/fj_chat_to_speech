@@ -12,8 +12,10 @@ import num2words
 import urllib
 
 import transformers
+from PyQt6.QtGui import QColor
 
 from app.constants import APP_NAME
+from app.constants_qt import COLORS_RGBA
 from app.translations import _
 
 _detoxify_ = None
@@ -110,10 +112,15 @@ def ensure_stdio_streams():
         sys.stderr = _NullStream()
 
 
+@lru_cache
+def root_dir() -> str:
+    return getattr(sys, "_MEIPASS", os.path.abspath("."))
+
+
+@lru_cache
 def resource_path(relative_path: str) -> str:
     """Resolve resource paths for source and PyInstaller onefile builds."""
-    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
-    return os.path.join(base_path, relative_path)
+    return os.path.join(root_dir(), str(relative_path))
 
 
 def icon_path():
@@ -192,18 +199,34 @@ def find_cached_silero_repo():
     return max(repo_candidates, key=os.path.getmtime)
 
 
-def clear_cache_silero():
+def clear_cache_silero(model: str | None = None):
     hub = get_torch_hub()
     hub_dir = hub.get_dir()
     if not os.path.isdir(hub_dir):
         return
 
     prefix = "snakers4_silero-models_"
+
+    if model:
+        for entry in os.listdir(hub_dir):
+            if entry.startswith(prefix):
+                models_path = os.path.join(hub_dir, f"{entry}/src/silero/model/")
+                if os.path.exists(models_path):
+                    for file in os.listdir(models_path):
+                        if file.startswith(model):
+                            # os.system(f'del /F /Q "{os.path.join(file, models_path)}"')
+                            os.remove(os.path.join(file, models_path))
+                # else:
+                #     if os.path.isdir(entry):
+                #         os.rmdir(entry)
+        return
+
     for entry in os.listdir(hub_dir):
         if entry.startswith(prefix):
             repo_path = os.path.join(hub_dir, entry)
             if os.path.isdir(repo_path):
-                os.system('rmdir /S /Q "{}"'.format(repo_path))
+                os.rmdir(repo_path)
+                # os.system('rmdir /S /Q "{}"'.format(repo_path))
 
 
 def detoxify_get_model_and_tokenizer_local_only(
@@ -297,7 +320,8 @@ def clear_cache_detoxify():
     hf_snapshots_dir = os.path.join(hf_cache_root, "hub", "models--xlm-roberta-base")
 
     if os.path.isdir(hf_snapshots_dir):
-        os.system('rmdir /S /Q "{}"'.format(hf_snapshots_dir))
+        os.rmdir(hf_snapshots_dir)
+        # os.system('rmdir /S /Q "{}"'.format(hf_snapshots_dir))
 
     hub = get_torch_hub()
     hub_dir = hub.get_dir()
@@ -873,3 +897,12 @@ def convert_emojis(text: str) -> str:
         lambda match: _emoji_from_shortcode(match.group(0)),
         text,
     )
+
+
+def to_color(value, fallback) -> QColor:
+    if isinstance(value, QColor):
+        return value
+    color = QColor(value) if value else to_color(fallback, COLORS_RGBA["BLACK"])
+    if not color.isValid():
+        color = to_color(fallback, COLORS_RGBA["BLACK"])
+    return color

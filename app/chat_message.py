@@ -29,7 +29,12 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRepl
 
 from app.constants import PLATFORM_ICON
 from app.constants_qt import COLORS_RGBA, COLORS_SOLID
-from app.utils import avatar_colors_from_name, get_emoji_cache_path, resource_path
+from app.utils import (
+    avatar_colors_from_name,
+    get_emoji_cache_path,
+    resource_path,
+    to_color,
+)
 
 OUTER_MARGIN = 5
 AVATAR_SIZE = 32
@@ -498,7 +503,7 @@ class ChatMessageDelegate(QStyledItemDelegate):
 
         body_width = max(20, bubble_width - (2 * BUBBLE_PADDING))
         view = self.parent() if isinstance(self.parent(), QListView) else None
-        text_color = _to_color(message["color"], self.color["WHITE"], self.color)
+        text_color = to_color(message["color"], self.color["WHITE"])
         document = _build_body_document(
             message, option.font, body_width, text_color, view
         )
@@ -538,7 +543,7 @@ class ChatMessageDelegate(QStyledItemDelegate):
         avatar_x = option.rect.x() + OUTER_MARGIN
         bubble_x = avatar_x + self.avatar_size + self.spacing
         bubble_y = item_top
-        bubble_color = _to_color(message["background"], self.color["BLACK"], self.color)
+        bubble_color = to_color(message["background"], self.color["BLACK"])
         view = self.parent() if isinstance(self.parent(), QListView) else None
 
         painter.save()
@@ -564,8 +569,8 @@ class ChatMessageDelegate(QStyledItemDelegate):
                 painter.setClipping(False)
             else:
                 avatar_bg, avatar_fg = avatar_colors_from_name(message["author"])
-                avatar_bg = _to_color(avatar_bg, self.color["GRAY"], self.color)
-                avatar_fg = _to_color(avatar_fg, self.color["WHITE"], self.color)
+                avatar_bg = to_color(avatar_bg, self.color["GRAY"])
+                avatar_fg = to_color(avatar_fg, self.color["WHITE"])
 
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(avatar_bg)
@@ -627,14 +632,3 @@ class ChatMessageDelegate(QStyledItemDelegate):
         document.drawContents(painter)
 
         painter.restore()
-
-
-def _to_color(value, fallback, color_dict):
-    if isinstance(value, QColor):
-        return value
-    color = (
-        QColor(value) if value else _to_color(fallback, color_dict["BLACK"], color_dict)
-    )
-    if not color.isValid():
-        color = _to_color(fallback, color_dict["BLACK"], color_dict)
-    return color

@@ -1,3 +1,5 @@
+from logging import DEBUG, Formatter, Logger, StreamHandler
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -14,6 +16,17 @@ from app.chat_message import ChatMessageDelegate, ChatMessageListModel
 
 from app.constants import APP_NAME
 from app.translations import _
+
+logger = Logger("ChatOverlay")
+# logger.setLevel(DEBUG)
+
+# handler = StreamHandler()
+# handler.setLevel(DEBUG)
+
+# formatter = Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# handler.setFormatter(formatter)
+
+# logger.addHandler(handler)
 
 TRANSPARENT_BLACK = "rgba(0, 0, 0, 150)"
 
@@ -34,6 +47,7 @@ class ChatOverlayWindow(QWidget):
     ):
         super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self._main_window = parent
+        self._model = model
         self._drag_offset = None
         self._resize_origin = None
         self._resize_size = None
@@ -52,10 +66,17 @@ class ChatOverlayWindow(QWidget):
         self.show_chat_overlay_shortcut = QShortcut(QKeySequence("F12"), self)
         self.show_chat_overlay_shortcut.activated.connect(self.close)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(10, 10, 10, 10)
+        self.root_layout.setSpacing(8)
 
+        self.setup_header()
+        self.setup_chat_view()
+        self.setup_footer()
+        self.set_font_size(font_size)
+        self.setup_tooltips()
+
+    def setup_header(self):
         self.title_bar = QWidget(self)
         self.title_bar.setCursor(Qt.CursorShape.SizeAllCursor)
         self.title_bar.setStyleSheet(
@@ -73,7 +94,7 @@ class ChatOverlayWindow(QWidget):
         title_layout.addStretch(1)
         self.title_bar.installEventFilter(self)
         self.title_label.installEventFilter(self)
-        layout.addWidget(self.title_bar)
+        self.root_layout.addWidget(self.title_bar)
 
         self.close_button = QPushButton("X")
         self.close_button.setStyleSheet(
@@ -89,6 +110,7 @@ class ChatOverlayWindow(QWidget):
         self.close_button.clicked.connect(self.close)
         title_layout.addWidget(self.close_button)
 
+    def setup_chat_view(self):
         self.chat_view = QListView(self)
         self.chat_view.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
         self.chat_view.setSelectionMode(QListView.SelectionMode.NoSelection)
@@ -108,7 +130,7 @@ class ChatOverlayWindow(QWidget):
             "QListView { background: transparent; border: none; }"
             "QListView::item { background: transparent; }"
         )
-        self.chat_view.setModel(model)
+        self.chat_view.setModel(self._model)
         self.chat_view.setItemDelegate(
             ChatMessageDelegate(
                 self.chat_view,
@@ -117,8 +139,9 @@ class ChatOverlayWindow(QWidget):
                 is_transparent=self.is_transparent,
             )
         )
-        layout.addWidget(self.chat_view)
+        self.root_layout.addWidget(self.chat_view)
 
+    def setup_footer(self):
         resize_layout = QHBoxLayout()
         self.always_on_top_button = QPushButton("^")
         self.always_on_top_button.setCheckable(True)
@@ -142,7 +165,6 @@ class ChatOverlayWindow(QWidget):
         resize_layout.addWidget(self.always_on_top_button)
         self._toggle_always_on_top(self.always_on_top)
 
-        resize_layout.setContentsMargins(0, 0, 8, 8)
         resize_layout.addStretch(1)
         self.size_grip = QLabel("><", self)
         self.size_grip.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -160,10 +182,7 @@ class ChatOverlayWindow(QWidget):
             0,
             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight,
         )
-        layout.addLayout(resize_layout)
-
-        self.set_font_size(font_size)
-        self.setup_tooltips()
+        self.root_layout.addLayout(resize_layout)
 
     def _toggle_always_on_top(self, checked: bool):
         geometry = self.geometry()
@@ -233,7 +252,6 @@ class ChatOverlayWindow(QWidget):
 
     def language_changed(self, lang):
         self.lang = lang
-
         self.setup_window_title()
         self.setup_tooltips()
 

@@ -473,10 +473,9 @@ def _parse_message(line):
                     "badges": "",
                     "tags": {},
                 }
+
     except Exception as e:
-        self.on_error(
-            f"{_(self.lang, 'Error parsing message')}. {translate_text(str(e), self.lang)}"
-        )
+        logger.error("Error parsing message. %s", str(e))
 
     return None
 

@@ -7,6 +7,11 @@
 **/__pycache__
 .venv
 .vs
+**/.vscode
+**/build/
+native
+build_native.py
+app/game_overlay
 
 settings.json
 

@@ -1,7 +1,7 @@
 import platform
 
 APP_NAME = "FJ Chat to Speech"
-APP_VERSION = "1.1.8"
+APP_VERSION = "1.1.9"
 
 PADDING = 20
 VOICES = {

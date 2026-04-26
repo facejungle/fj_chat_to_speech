@@ -95,9 +95,11 @@ from app.utils import (
     all_letters_is,
     load_stop_words,
     resource_path,
+    save_stop_words,
     torch_no_grad,
 )
 from app.youtube.chat_parser import YouTubeChatParser
+from app.banned_list_widget import BannedListDialog
 
 size_policy_fixed = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 window_flag_fixed = (
@@ -146,7 +148,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.app_icon = QIcon(resource_path(icon_path()))
         self.setWindowIcon(self.app_icon)
-        self.setMinimumSize(1200, 600)
+        self.setMinimumSize(1000, 400)
 
         self.root_widget = QWidget()
         self.setCentralWidget(self.root_widget)
@@ -232,6 +234,7 @@ class MainWindow(QMainWindow):
         self.load_settings()
 
         self.audio_queue = Queue(maxsize=self.buffer_maxsize)
+        self.donation_audio_queue = Queue()
         self.process_message_queue = Queue()
 
         self.setup_ui()
@@ -957,6 +960,7 @@ class MainWindow(QMainWindow):
             ):
                 if not self._is_active_connection_token("twitch", connection_token):
                     return
+
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
@@ -1114,6 +1118,7 @@ class MainWindow(QMainWindow):
             ):
                 if not self._is_active_connection_token("youtube", connection_token):
                     return
+
                 self.process_message_queue.put_nowait(
                     PlatformMessage(
                         msg_id=msg_id,
@@ -1182,33 +1187,13 @@ class MainWindow(QMainWindow):
         self.connect_yt_button.setEnabled(False)
 
     def on_list_of_banned_action(self):
-        dlg = QDialog(self)
-        dlg.setMinimumSize(600, 300)
-        dlg.setWindowTitle(_(self.language, "List of banned"))
-
-        layout = QVBoxLayout(dlg)
-        layout.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
-
-        self.banned_text = QPlainTextEdit()
-        self.banned_text.setPlainText("\n".join(self.banned_set))
-
-        self.banned_text.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-
-        layout.addWidget(self.banned_text, 1)
-
-        save_banned_btn = QPushButton(_(self.language, "Save"))
-        save_banned_btn.clicked.connect(self.on_save_banned)
-
-        layout.addWidget(save_banned_btn)
-
+        dlg = BannedListDialog(self, banned_items=self.banned_set, lang=self.language)
         dlg.exec()
 
     def on_save_banned(self):
         content = self.banned_text.toPlainText().strip()
         content = set([w.strip() for w in content.splitlines() if w.strip()])
-        self.banned_set = content  # TODO: Need a concat with new items if updated (from self.process_toxic_message)
+        self.banned_set = content
         self.save_banned_list()
         self.statusBar().showMessage(_(self.language, "Saved"), 3000)
 
@@ -1242,12 +1227,7 @@ class MainWindow(QMainWindow):
             tuple(set([w.lower().strip() for w in content.splitlines() if w.strip()]))
         )
 
-        with open(
-            resource_path(f"spam_filter/{self.voice_language}.txt"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            f.write("\n".join(self.stop_words) + "\n")
+        save_stop_words(self.voice_language, self.stop_words)
 
         self.statusBar().showMessage(
             f"{_(self.language, 'Saved')} {len(self.stop_words)} {_(self.language, 'stop words')}",
@@ -1822,7 +1802,7 @@ class MainWindow(QMainWindow):
 
             cleaned_text = clean_links(msg.get("text", ""), lang=self.voice_language)
             cleaned_text = clean_emoji(cleaned_text)
-            text = clean_message(cleaned_text, lang=self.voice_language)
+            text = clean_message(cleaned_text)
 
             if not text or text in seen_texts:
                 continue
@@ -1865,7 +1845,7 @@ class MainWindow(QMainWindow):
                         r.get("comment_text", ""), lang=self.voice_language
                     )
                     cleaned_text = clean_emoji(cleaned_text)
-                    text = clean_message(cleaned_text, lang=self.voice_language)
+                    text = clean_message(cleaned_text)
                     if not text:
                         continue
 
@@ -2406,12 +2386,14 @@ class MainWindow(QMainWindow):
 
         is_transliterated = False
         is_stop_words_cleaned = False
-        cleaned_text = str(message)
+        cleaned_text = message
         overlay_segments = message_ex
 
-        if self.auto_translate and not all_letters_is(message, self.voice_language):
+        if self.auto_translate and not all_letters_is(
+            clean_symbols(clean_emoji(cleaned_text)), self.voice_language
+        ):
             cleaned_text, overlay_segments = translate_segments(
-                message, message_ex, self.voice_language
+                cleaned_text, message_ex, self.voice_language
             )
 
         if self.chat_overlay_clr_stop_words:
@@ -2437,17 +2419,9 @@ class MainWindow(QMainWindow):
 
         cleaned_text = clean_links(cleaned_text, lang=self.voice_language)
         cleaned_text = clean_emoji(cleaned_text)
+        cleaned_text = convert_numbers_to_words(cleaned_text, self.voice_language)
         cleaned_text = clean_symbol_spam(cleaned_text)
         cleaned_text = map_symbols(cleaned_text, lang=self.voice_language)
-        cleaned_text = clean_message(
-            cleaned_text,
-            lang=self.voice_language,
-            convert_numbers=False,
-            clean_spam=False,
-        )
-
-        if not cleaned_text:
-            return
 
         if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
             cleaned_text = transliteration(cleaned_text, self.voice_language)
@@ -2468,22 +2442,22 @@ class MainWindow(QMainWindow):
         elif _(self.language, "Regular") not in read_filter:
             return
 
-        toxic_val = self.calc_toxicity(cleaned_text)
-        if toxic_val:
-            detox_key = max(toxic_val, key=toxic_val.get)
-            detox_value = toxic_val[detox_key]
-            if detox_value >= self.toxic_sense:
-                self.process_toxic_message(
-                    platform=platform,
-                    author=cleaned_author,
-                    reason=str(detox_key).replace("_", " ").capitalize(),
-                    is_staff=is_staff,
-                    is_owner=is_owner,
-                    severity=detox_value,
-                )
-                return
+        if not is_staff and not is_owner:
+            toxic_val = self.calc_toxicity(cleaned_text)
+            if toxic_val:
+                detox_key = max(toxic_val, key=toxic_val.get)
+                detox_value = toxic_val[detox_key]
+                if detox_value >= self.toxic_sense:
+                    self.process_toxic_message(
+                        platform=platform,
+                        author=cleaned_author,
+                        reason=str(detox_key).replace("_", " ").capitalize(),
+                        is_staff=is_staff,
+                        is_owner=is_owner,
+                        severity=detox_value,
+                    )
+                    return
 
-        cleaned_text = convert_numbers_to_words(cleaned_text, self.voice_language)
         if not is_transliterated:
             cleaned_text = transliteration(cleaned_text, self.voice_language)
 
@@ -2493,17 +2467,19 @@ class MainWindow(QMainWindow):
         if not contain_words_or_nums(cleaned_text, lang=self.voice_language):
             return
 
+        cleaned_text = clean_message(cleaned_text)
+
+        if not cleaned_text:
+            return
+
         if len(cleaned_text) < self.min_text_length:
             return
+
         if len(cleaned_text) > self.max_text_length:
             cleaned_text = cleaned_text[: self.max_text_length] + "..."
 
-        cleaned_author = clean_message(
-            cleaned_author,
-            lang=self.voice_language,
-            convert_numbers=False,
-            clean_spam=False,
-        )
+        cleaned_author = clean_symbol_spam(cleaned_author)
+        cleaned_author = clean_message(cleaned_author)
         cleaned_author = clean_symbols(cleaned_author)
         if self.read_author_names or self.read_platform_names:
             cleaned_author = " ".join(
@@ -2516,7 +2492,7 @@ class MainWindow(QMainWindow):
             platform, cleaned_author, cleaned_text, is_donate=is_donate
         )
 
-        self.speak(cleaned_text)
+        self.speak(cleaned_text, is_donate=is_donate)
 
     def cleaned_text_to_text(self, platform, author, text, is_donate=False):
         if (self.read_author_names and self.read_platform_names) or is_donate:
@@ -2668,7 +2644,7 @@ class MainWindow(QMainWindow):
 
         return audio
 
-    def speak(self, text):
+    def speak(self, text, is_donate=False):
         """Main TTS method"""
         logger.debug("speak(): %s", text)
         try:
@@ -2677,7 +2653,10 @@ class MainWindow(QMainWindow):
                 return False
             audio_numpy = self.postprocess_audio(audio)
             if len(audio_numpy) > 0:
-                self._put_audio_latest(audio_numpy)
+                if is_donate:
+                    self._put_donation_audio_latest(audio_numpy)
+                else:
+                    self._put_audio_latest(audio_numpy)
                 return True
             return False
 
@@ -2688,6 +2667,18 @@ class MainWindow(QMainWindow):
                 status="error",
             )
             return False
+
+    def _put_donation_audio_latest(self, audio_numpy):
+        logger.debug("_put_donation_audio_latest()")
+        while True:
+            try:
+                self.donation_audio_queue.put_nowait(audio_numpy)
+                return
+            except Full:
+                try:
+                    self.donation_audio_queue.get_nowait()
+                except Empty:
+                    continue
 
     def _put_audio_latest(self, audio_numpy):
         logger.debug("_put_audio_latest()")
@@ -2737,9 +2728,13 @@ class MainWindow(QMainWindow):
                     continue
 
                 try:
-                    audio_data = self.audio_queue.get(timeout=0.2)
+                    audio_data = self.donation_audio_queue.get(timeout=0.2)
                 except Empty:
-                    continue
+
+                    try:
+                        audio_data = self.audio_queue.get(timeout=0.2)
+                    except Empty:
+                        continue
 
                 self.play_audio(audio_data)
                 played_message = True

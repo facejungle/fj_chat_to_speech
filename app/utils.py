@@ -338,124 +338,83 @@ def clear_cache_detoxify():
         os.remove(checkpoint_path)
 
 
+def clean_punctuation(text: str):
+    _text = ""
+    for symbol in text:
+        if symbol.isalpha() or symbol.isdigit():
+            _text += symbol
+        else:
+            _text += " "
+    return _text
+
+
 def clean_symbol_spam(text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
 
-    _text = text
-    if re.search(r"(.)\1{3,}", text):
-        _text = re.sub(r"(.)\1{3,}", r"\1", text)
+    tokens = re.findall(r"\w+|[^\w\s]+", text, flags=re.UNICODE)
+    cleaned_tokens: list[str] = []
 
-    # If the message already looks like human language (after collapsing repeats),
-    # do not attempt to remove separators/spaces — it causes long messages to be glued.
-    if _is_normal_text(_text):
-        return _text
+    for tok in tokens:
+        if not tok:
+            continue
 
-    _text_ = re.sub(r"[\s\-_\.]", "", _text)
-    if not _is_normal_text(_text_):
-        _text = _text_
+        if re.fullmatch(r"[^\w\s]+", tok):
+            cleaned_tokens.append(tok)
+            continue
 
-    if _is_normal_text(_text):
-        return _text
+        if tok.isdigit():
+            if len(tok) <= 7:
+                cleaned_tokens.append(tok)
+            continue
 
-    words = re.findall(r"[a-zа-яё0-9]+", _text.lower())
+        if re.search(r"\d", tok):
+            cleaned_tokens.append(tok)
+            continue
 
-    cleaned = []
-    for w in words:
-        w = _clean_word(w)
-        if w:
-            cleaned.append(w)
+        folded = _clean_word(tok)
+        if folded:
+            if (
+                len(cleaned_tokens) > 1
+                and cleaned_tokens[-1] == folded
+                and cleaned_tokens[-2] == folded
+            ):
+                continue
+            cleaned_tokens.append(folded)
 
-    deduped = []
-    for w in cleaned:
-        if not deduped or deduped[-1] != w:
-            deduped.append(w)
+    final_text = " ".join(cleaned_tokens)
+    if not text.isdigit() and is_low_diversity_text(final_text.lower()):
+        return text[:3]
 
-    if len(deduped) > 3 and len(set(deduped)) <= 2:
-        return deduped[0]
-
-    return " ".join(deduped)
-
-
-def _is_normal_text(text: str) -> bool:
-    if text.rstrip().endswith((".", "!", "?")):
-        words = text.split()
-        if len(words) > 1:
-            sentences = re.split(r"[.!?]+", text)
-            for s in sentences:
-                s = s.strip()
-                if s and s[0].isupper():
-                    return True
-
-    has_uppercase = any(c.isupper() for c in text if c.isalpha())
-    has_punctuation = any(c in text for c in ".!?,;:-")
-
-    letters = sum(c.isalpha() for c in text)
-    total = len(text.strip())
-    if total == 0:
-        return False
-
-    letter_ratio = letters / total
-
-    tokens = re.findall(r"[^\W_]+", text, flags=re.UNICODE)
-    meaningful_tokens = [t for t in tokens if len(t) >= 3]
-    if len(meaningful_tokens) >= 4:
-        token_lengths_sum = sum(len(t) for t in meaningful_tokens)
-        avg_token_len = (
-            token_lengths_sum / len(meaningful_tokens) if meaningful_tokens else 0
-        )
-        tokens_lower = [t.lower() for t in meaningful_tokens]
-        unique_token_ratio = (
-            (len(set(tokens_lower)) / len(tokens_lower)) if tokens_lower else 0
-        )
-        if letter_ratio >= 0.6 and avg_token_len >= 4 and unique_token_ratio >= 0.25:
-            return True
-
-    unique_chars = len(set(text.lower()))
-    unique_ratio_denom = min(total, 80)
-    unique_ratio = unique_chars / unique_ratio_denom if unique_ratio_denom > 0 else 0
-
-    return (
-        letter_ratio > 0.5 or (has_punctuation and has_uppercase)
-    ) and unique_ratio > 0.3
+    return final_text
 
 
 def _clean_word(word: str) -> str:
-    if len(word) < 2:
+    if len(word) <= 2:
         return word
 
-    if re.fullmatch(r"\d+(?:[.,]\d+)?", word):
-        if _is_repetitive(word):
-            return ""
-        if _is_low_diversity(word, min_len=5):
-            return ""
-        if len(word) >= 8:
-            for block_len in range(1, min(5, len(word) // 2)):
-                if len(word) % block_len == 0:
-                    block = word[:block_len]
-                    if (
-                        block * (len(word) // block_len) == word
-                        and len(word) // block_len >= 2
-                    ):
-                        return ""
-        return word
+    _word = _collapse_repeats(word)
 
-    word = _collapse_repeats(word)
+    if len(_word) > 20:
+        return word[:3]
 
-    if _is_repetitive(word) or _is_low_diversity(word):
-        return ""
+    lower_word = _word.lower()
+    if (
+        _is_repetitive(lower_word)
+        or _is_low_diversity(lower_word)
+        or _is_max_diversity(lower_word)
+    ):
+        return word[:3]
 
-    return word
+    return _word
 
 
 def _collapse_repeats(s: str) -> str:
-    if len(s) < 2:
+    # Collapse runs of 3 or more identical characters into a single character.
+    # Keep single and double characters as-is.
+    if len(s) < 3:
         return s
-    result = [s[0]]
-    for ch in s[1:]:
-        if ch != result[-1]:
-            result.append(ch)
-    return "".join(result)
+    return re.sub(r"(.)\1{2,}", r"\1", s)
 
 
 def _is_repetitive(s: str, min_repeats: int = 3, max_block: int = 4) -> bool:
@@ -470,7 +429,21 @@ def _is_repetitive(s: str, min_repeats: int = 3, max_block: int = 4) -> bool:
     return False
 
 
-def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> bool:
+def is_low_diversity_text(text: str):
+    _text = clean_symbols(text)
+    unique_chars_num = len(set(_text))
+    words_num = len(_text.split())
+    return unique_chars_num < 1 + words_num
+
+
+def _is_max_diversity(s: str, threshold: float = 0.9, min_len: int = 15) -> bool:
+    if len(s) < min_len:
+        return False
+    unique_ratio = len(set(s)) / len(s)
+    return unique_ratio > threshold
+
+
+def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 3) -> bool:
     if len(s) < min_len:
         return False
     unique_ratio = len(set(s)) / len(s)
@@ -478,8 +451,8 @@ def _is_low_diversity(s: str, threshold: float = 0.34, min_len: int = 10) -> boo
 
 
 def clean_emoji(text):
-    text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", "", text)
-    return re.sub(r":[0-9A-Za-z_+-]{1,64}:", "", text).strip()
+    _text = re.sub(r"<a?:[A-Za-z0-9_]{2,32}:\d{1,20}>", " ", text)
+    return re.sub(r":[0-9A-Za-z_+-]{1,64}:", " ", _text).strip()
 
 
 def clean_links(text, lang: str = "en"):
@@ -491,25 +464,12 @@ def clean_links(text, lang: str = "en"):
     return _text
 
 
-def clean_message(
-    text: str,
-    lang: str,
-    convert_numbers: bool = True,
-    clean_spam: bool = True,
-) -> str:
+def clean_message(text: str) -> str:
     """Clean message from garbage"""
-    text = str(text or "")
-    text = re.sub(r"[^0-9A-Za-zА-Яа-яЁё\s!,-.:?]", " ", text).strip()
-
-    if not text:
-        return text
-
-    text = re.sub(r"\s+", " ", text)
-    if convert_numbers:
-        text = convert_numbers_to_words(text, lang)
-    if clean_spam:
-        text = clean_symbol_spam(text.strip())
-    return text.strip()
+    _text = str(text or "")
+    _text = re.sub(r"[^0-9A-Za-zА-Яа-яЁё\s!,-.:?]", " ", _text)
+    _text = re.sub(r"\s{2,}", " ", _text)
+    return _text.strip()
 
 
 def load_stop_words(lang):
@@ -522,6 +482,15 @@ def load_stop_words(lang):
     except Exception as e:
         pass
     return tuple()
+
+
+def save_stop_words(lang, stop_words):
+    with open(
+        resource_path(f"spam_filter/{lang}.txt"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+        f.write("\n".join(stop_words) + "\n")
 
 
 def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
@@ -540,7 +509,7 @@ def contains_stop_words(text: str, stop_words: Iterable[str]) -> bool:
 
     text_lower = text.lower()
     text_lower = text.replace("ё", "е")
-    text_lower = clean_symbols(text_lower)
+    text_lower = clean_punctuation(text_lower)
     text_words = text_lower.split(" ")
     text_words_join = "".join(text_words)
 
@@ -644,7 +613,7 @@ def all_letters_is(text: str, lang: str = "en") -> bool:
     if lang == "ru":
         return all(re.match(r"[А-Яа-яЁё]", ch) for ch in letters)
 
-    return True
+    return False
 
 
 def contain_words_or_nums(text: str, lang: str = "en") -> bool:
@@ -692,27 +661,36 @@ def avatar_colors_from_name(name: str):
 
 def convert_numbers_to_words(text: str, lang: str) -> str:
     """Convert numbers to text representation"""
+    _text = re.sub(r"\d{8,}", " ", text)
 
-    def replace_number(match):
-        num = match.group()
-        try:
-            if "." in num:
-                parts = num.split(".")
-                integer_part = num2words.num2words(int(parts[0]), lang=lang)
-                fractional_part = num2words.num2words(int(parts[1]), lang=lang)
-                return f" {integer_part} {_(lang, 'point')} {fractional_part} "
-            elif "," in num:
-                parts = num.split(",")
-                integer_part = num2words.num2words(int(parts[0]), lang=lang)
-                fractional_part = num2words.num2words(int(parts[1]), lang=lang)
-                return f" {integer_part} {_(lang, 'comma')} {fractional_part} "
+    def to_number(s: str) -> str:
+        """Convert a numeric string (without separators) to words."""
+        if s.startswith("0") and len(s) > 1:
+            zero_word = num2words.num2words(0, lang=lang)
+            rest_word = num2words.num2words(int(s[1:]), lang=lang)
+            return f" {zero_word} {rest_word} "
+        else:
+            return num2words.num2words(int(s), lang=lang)
+
+    def replace_number(match: re.Match) -> str:
+        num_str = match.group()
+        tokens = re.findall(r"\d+|[.,]", num_str)
+        if not tokens:
+            return num_str
+
+        result_parts = []
+        for token in tokens:
+            if token.isdigit():
+                result_parts.append(to_number(token))
             else:
-                return f" {num2words.num2words(int(num), lang=lang)} "
-        except Exception:
-            return num
+                if token == ".":
+                    result_parts.append(_(lang, "point"))
+                else:
+                    result_parts.append(_(lang, "comma"))
+        return " ".join(result_parts)
 
-    number_pattern = r"\d+(?:[.,]\d+)?"
-    converted_text = re.sub(number_pattern, replace_number, text)
+    number_pattern = r"\d+(?:[.,]\d+)*"
+    converted_text = re.sub(number_pattern, replace_number, _text)
     return converted_text
 
 

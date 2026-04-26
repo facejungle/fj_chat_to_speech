@@ -6,13 +6,13 @@ type ColorsLiteral = Literal[
     "BLACK", "WHITE", "GRAY", "YELLOW", "GREEN", "BLUE", "ORANGE"
 ]
 COLORS_RGBA: dict[ColorsLiteral, QColor] = {
-    "BLACK": QColor(0, 0, 0, 200),
-    "WHITE": QColor(255, 255, 255, 220),
-    "GRAY": QColor(68, 68, 68, 220),
-    "YELLOW": QColor(92, 91, 26, 220),
-    "GREEN": QColor(51, 94, 22, 220),
-    "BLUE": QColor(17, 27, 54, 220),
-    "ORANGE": QColor(69, 19, 19, 220),
+    "BLACK": QColor(0, 0, 0, 180),
+    "WHITE": QColor(255, 255, 255, 200),
+    "GRAY": QColor(68, 68, 68, 200),
+    "YELLOW": QColor(92, 91, 26, 200),
+    "GREEN": QColor(51, 94, 22, 200),
+    "BLUE": QColor(17, 27, 54, 200),
+    "ORANGE": QColor(69, 19, 19, 200),
 }
 
 COLORS_SOLID: dict[ColorsLiteral, QColor] = {
